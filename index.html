@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AIPickVault Desktop</title>
+
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        background: radial-gradient(circle at top, #0f1a2a, #000000 70%);
+        color: #e0e0ff;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        text-shadow: 0 0 4px #00eaff;
+
+        margin: 0;
+        padding: 20px;
+        box-sizing: border-box;
+
+        height: 100vh;
+
+        display: flex;
+        flex-direction: column;
+      }
+
+      h1 {
+        color: #00eaff;
+        text-align: center;
+        font-size: 32px;
+        margin-bottom: 10px;
+        text-shadow: 0 0 10px #00eaff, 0 0 20px #00eaff;
+      }
+
+      #modelDisplay {
+        text-align: center;
+        margin-bottom: 20px;
+        color: #00ffaa;
+        font-size: 18px;
+        text-shadow: 0 0 8px #00ffaa;
+      }
+
+      #chat {
+        border: 2px solid #00eaff;
+        padding: 15px;
+
+        flex: 1;
+        min-height: 300px;
+
+        overflow-y: auto;
+
+        background: rgba(0, 20, 40, 0.85);
+        box-shadow: 0 0 20px #00eaff;
+        border-radius: 10px;
+
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .msg-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        width: 100%;
+      }
+
+      .avatar {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        font-size: 16px;
+        color: #e0e0ff;
+        box-shadow: 0 0 10px currentColor;
+      }
+
+      .avatar.user {
+        background: rgba(0, 120, 255, 0.5);
+        color: #00aaff;
+      }
+
+      .avatar.ai {
+        background: rgba(0, 255, 180, 0.5);
+        color: #00ffaa;
+      }
+
+      .msg {
+        padding: 12px 16px;
+        border-radius: 12px;
+
+        width: calc(100% - 80px);
+
+        line-height: 1.6;
+
+        box-shadow: 0 0 12px currentColor;
+
+        overflow-wrap: break-word;
+        word-break: break-word;
+      }
+
+      .user-msg {
+        background: rgba(0, 120, 255, 0.35);
+        color: #e0e0ff;
+        margin-left: auto;
+        border-left: 3px solid #00eaff;
+      }
+
+      .ai-msg {
+        background: rgba(0, 255, 180, 0.25);
+        color: #e0e0ff;
+        margin-right: auto;
+        border-left: 3px solid #00ffaa;
+        white-space: pre-wrap;
+        line-height: 1.7;
+        width: 92%;
+        overflow-wrap: break-word;
+        word-break: break-word;
+      }
+
+      .typing {
+        display: flex;
+        gap: 6px;
+        padding: 10px 14px;
+        background: rgba(0, 255, 180, 0.15);
+        border-left: 3px solid #00ffaa;
+        border-radius: 12px;
+        box-shadow: 0 0 12px #00ffaa;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        background: #00ffaa;
+        border-radius: 50%;
+        animation: blink 1.4s infinite;
+      }
+
+      .dot:nth-child(2) { animation-delay: 0.2s; }
+      .dot:nth-child(3) { animation-delay: 0.4s; }
+
+      @keyframes blink {
+        0% { opacity: 0.2; }
+        50% { opacity: 1; }
+        100% { opacity: 0.2; }
+      }
+
+      textarea {
+        width: 100%;
+        padding: 12px;
+        margin-top: 15px;
+        background: #001020;
+        color: #e0e0ff;
+        border: 2px solid #00eaff;
+        border-radius: 8px;
+        font-size: 16px;
+        box-shadow: 0 0 10px #00eaff;
+        outline: none;
+      }
+
+      textarea:focus {
+        border-color: #00ffaa;
+        box-shadow: 0 0 15px #00ffaa;
+      }
+
+      .button-row {
+          display: flex;
+          gap: 10px;
+          margin-top: 10px;
+      }
+
+      .button-row button {
+          flex: 1;
+      }
+      button {
+        margin-top: 10px;
+        width: 100%;
+        padding: 12px;
+        background: #002040;
+        color: #e0e0ff;
+        border: 2px solid #00eaff;
+        border-radius: 8px;
+        font-size: 18px;
+        cursor: pointer;
+        box-shadow: 0 0 10px #00eaff;
+      }
+
+      button:hover {
+        border-color: #00ffaa;
+        box-shadow: 0 0 15px #00ffaa;
+      }
+    </style>
+</head>
+<body>
+
+<h1>AIPickVault Desktop</h1>
+
+<select id="modelSelect" style="
+    width: 100%;
+    padding: 10px;
+    margin-bottom: 15px;
+    background: #001020;
+    color: #00ffaa;
+    border: 2px solid #00ffaa;
+    border-radius: 8px;
+    font-size: 16px;
+    box-shadow: 0 0 10px #00ffaa;
+">
+    <option value="llama3">llama3</option>
+    <option value="qwen3-coder:7b">qwen3-coder:7b</option>
+    <option value="qwen3-coder:14b">qwen3-coder:14b</option>
+    <option value="qwen3-coder:30b">qwen3-coder:30b</option>
+</select>
+
+<div id="modelDisplay">Model: loading...</div>
+
+<div id="chat"></div>
+
+<textarea id="userInput" rows="3" placeholder="Type your message..."></textarea>
+<button id="sendBtn">Send</button>
+
+<script>
+    const chat = document.getElementById('chat');
+    const userInput = document.getElementById('userInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const modelDisplay = document.getElementById('modelDisplay');
+    chat.innerHTML = `
+    <div class="msg-row">
+        <div class="avatar ai">AI</div>
+        <div class="msg ai-msg">
+            🚀 Welcome to AIPickVault Desktop
+
+            Available Tools:
+
+            🌤 Weather
+            📰 News
+            📈 Stocks
+            🔍 Search
+
+            Try asking:
+
+            What's the weather?
+            Breaking AI news
+            Stock price of NVDA
+            Search Texas pharmacy technician requirements
+        </div>
+    </div>
+    `;
+
+    // Extract JSON from <tool> ... </tool>
+    function extractToolJSON(text) {
+        const start = text.indexOf("<tool>");
+        const end = text.indexOf("</tool>");
+        if (start === -1 || end === -1) return null;
+        try {
+            return JSON.parse(text.substring(start + 6, end).trim());
+        } catch {
+            return null;
+        }
+    }
+
+    async function sendMessage() {
+        const message = userInput.value.trim();
+        if (!message) return;
+
+        const selectedModel = document.getElementById("modelSelect").value;
+
+        // USER BUBBLE
+        let userRow = document.createElement("div");
+        userRow.className = "msg-row";
+
+        let userAvatar = document.createElement("div");
+        userAvatar.className = "avatar user";
+        userAvatar.textContent = "U";
+
+        let userBubble = document.createElement("div");
+        userBubble.className = "msg user-msg";
+        userBubble.textContent = message;
+
+        userRow.appendChild(userBubble);
+        userRow.appendChild(userAvatar);
+        chat.appendChild(userRow);
+        chat.scrollTop = chat.scrollHeight;
+
+        userInput.value = "";
+
+        // TYPING INDICATOR
+        let typingRow = document.createElement("div");
+        typingRow.className = "msg-row";
+
+        let aiAvatarTyping = document.createElement("div");
+        aiAvatarTyping.className = "avatar ai";
+        aiAvatarTyping.textContent = "AI";
+
+        let typingBubble = document.createElement("div");
+        typingBubble.className = "typing";
+        typingBubble.innerHTML = `
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+        `;
+
+        typingRow.appendChild(aiAvatarTyping);
+        typingRow.appendChild(typingBubble);
+        chat.appendChild(typingRow);
+        chat.scrollTop = chat.scrollHeight;
+
+        // FIRST PASS
+        console.log("Sending:", message);
+
+        const first = await window.api.askModel({
+            message,
+            model: selectedModel
+        });
+
+        console.log("Received:", first);
+
+        modelDisplay.textContent = "Model: " + first.model;
+
+        typingRow.remove();
+
+        // CHECK FOR TOOL CALL
+        const toolCall = extractToolJSON(first.text);
+
+        if (!toolCall) {
+            // NO TOOL → NORMAL ANSWER
+            let aiRow = document.createElement("div");
+            aiRow.className = "msg-row";
+
+            let aiAvatar = document.createElement("div");
+            aiAvatar.className = "avatar ai";
+            aiAvatar.textContent = "AI";
+
+            let aiBubble = document.createElement("div");
+            aiBubble.className = "msg ai-msg";
+           aiBubble.innerHTML = first.text; 
+
+            aiRow.appendChild(aiAvatar);
+            aiRow.appendChild(aiBubble);
+            chat.appendChild(aiRow);
+            chat.scrollTop = chat.scrollHeight;
+            return;
+        }
+
+        // TOOL EXECUTION
+        const toolResult = await window.api.callTool(toolCall);
+
+        // SECOND PASS
+        const second = await window.api.askModel({
+            message: JSON.stringify(toolResult),
+            model: first.model
+        });
+
+        // FINAL ANSWER
+        let aiRow = document.createElement("div");
+        aiRow.className = "msg-row";
+
+        let aiAvatar = document.createElement("div");
+        aiAvatar.className = "avatar ai";
+        aiAvatar.textContent = "AI";
+
+        let aiBubble = document.createElement("div");
+        aiBubble.className = "msg ai-msg";
+        aiBubble.innerHTML = second.text;
+        
+        aiRow.appendChild(aiAvatar);
+        aiRow.appendChild(aiBubble);
+        chat.appendChild(aiRow);
+        chat.scrollTop = chat.scrollHeight;
+    }
+
+    const modelSelect =
+        document.getElementById("modelSelect");
+
+    modelDisplay.textContent =
+        "Model: " + modelSelect.value;
+
+    modelSelect.addEventListener("change", () => {
+        modelDisplay.textContent =
+            "Model: " + modelSelect.value;
+    });
+    sendBtn.addEventListener('click', sendMessage);
+
+    clearBtn.addEventListener("click", () => {
+        chat.innerHTML = `
+            <div class="msg-row">
+                <div class="avatar ai">AI</div>
+                <div class="msg ai-msg">
+                    Chat cleared.
+            </div>
+          </div>
+       `;
+    });
+
+    userInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
+</script>
+
+</body>
+</html>
