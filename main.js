@@ -135,7 +135,7 @@ ipcMain.handle("ask-model", async (event, data) => {
       text: weatherAnswer,
       model
     };
- }
+  }
 
     // NEWS
 if (
@@ -288,7 +288,7 @@ news.forEach((article, index) => {
       );
 
       const stockAnswer = await askOllama(
-      `You are a financial research assistant.
+      `You are an elite stock research analyst.
 
       User Question:
       ${message}
@@ -298,31 +298,50 @@ news.forEach((article, index) => {
 
       Related News:
       ${JSON.stringify(stockNews, null, 2)}
-      Instructions:
 
-      - Explain the stock data in plain English.
-      - Mention the current stock price.
-      - Mention recent movement.
-      - Analyze the related news.
-      - Identify positive catalysts.
-      - Identify potential risks.
-      - Explain why the stock may be moving.
-      - Summarize investor sentiment.
-      - If information conflicts, explain why.
-      - Do not show JSON.
-      - Be concise but insightful.
+      Generate a report using this structure:
 
-      Answer naturally.
+      ${symbol} STOCK REPORT
+
+      Current Price:
+      (value)
+
+      Daily Change:
+      (value)
+
+      Trend:
+      Bullish, Bearish, or Neutral
+
+      Positive Catalysts:
+      • item
+      • item
+      • item
+
+      Risks:
+      • item
+      • item
+      • item
+
+      News Impact:
+      (short explanation)
+
+      Investor Sentiment:
+      Positive, Neutral, or Negative
+
+      Bottom Line:
+      (short conclusion)
+
+      Base your analysis on both the stock data and the news.
+
+      Do not output JSON.
       `,
       model
       );
-
-return {
-  text: stockAnswer,
-  model
-};
-    }
-
+      return {
+        text: stockAnswer,
+        model
+      };
+     }
     // SEARCH
     if (
       lower.startsWith("search ") ||
