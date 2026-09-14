@@ -13,6 +13,7 @@ const {
   describePlan,
   rewriteSearchQuery,
   buildSynthesisPrompt,
+  buildFetchSynthesisPrompt,
   extractBudget,
   extractGigUseCase,
   rankWebResultsForSynth,
@@ -474,8 +475,34 @@ async function __fetchPageTest() {
   assert.match(prompt, /PACK-ONLY|pack heuristic/i);
   assert.match(prompt, /Do NOT invent TDI|DFW market scrapes|fake citations/i);
   assert.match(prompt, /SOH %|failure probabilit|reliability index|invented %|Never invent SOH/i);
-  console.log("All research-loop tests passed.");
 })().catch((err) => {
   console.error(err);
   process.exit(1);
 });
+
+// Listing URL → search fallback query + fetch synth rules
+{
+  const { listingSearchQueryFromUrl, isListingSiteUrl } = require("./tools");
+  const { buildFetchSynthesisPrompt } = require("./researchLoop");
+  const url = "https://www.cars.com/shopping/results/?year_min=2014&year_max=2015&makes%5B%5D=toyota&models%5B%5D=toyota-corolla&zip=76177";
+  assert.ok(isListingSiteUrl(url));
+  const q = listingSearchQueryFromUrl(url);
+  assert.match(q, /corolla/i);
+  assert.match(q, /76177|Fort Worth/i);
+
+  const fetchPrompt = buildFetchSynthesisPrompt("check listings", {
+    page: {
+      url: "https://www.autotrader.com/cars-for-sale/toyota/corolla",
+      title: "Corolla for Sale",
+      listingSite: true,
+      listings: [{ year: "2012", title: "2012 Toyota Corolla LE", price: "$7500", mileage: "110000" }],
+      text: "LISTING CANDIDATES"
+    },
+    errors: []
+  });
+  assert.match(fetchPrompt, /VEHICLE LISTING|vehicles for sale|LISTING/i);
+  assert.match(fetchPrompt, /NEVER pivot|trim\/package|Make it Mine/i);
+  assert.match(fetchPrompt, /API-key|\.env/i);
+}
+
+console.log("All research-loop tests passed.");

@@ -164,4 +164,24 @@ expectIntent("Check out my website www.example.org", "fetch", (r) => {
 }
 
 
+// Year-recall + locate + shop
+{
+  const { ensureGigVehicleDomainRoute, isYearRecallAsk, isLocateRecommendedVehicleAsk } = require("./domain/gigVehicle");
+  const { planTools } = require("./researchLoop");
+  const yearsQ = "I forgot what years of Corrolas I'm searching for regarding gig work.";
+  assert.strictEqual(isYearRecallAsk(yearsQ), true);
+  const yRoute = ensureGigVehicleDomainRoute(yearsQ, routeMessage(yearsQ), {});
+  assert.strictEqual(yRoute.intent, "search");
+  assert.ok(planTools(yRoute, yearsQ).some((s) => s.tool === "domain"));
+
+  const locQ = "Can you locate me the Toyota Carolla that you recommended from earlier?";
+  assert.strictEqual(isLocateRecommendedVehicleAsk(locQ), true);
+  expectIntent(locQ, "search");
+
+  expectIntent(
+    "Check Amazon and Walmart for me and let me know a few of the products you find for neodymium magnet.",
+    "search"
+  );
+}
+
 console.log("All router tests passed.");

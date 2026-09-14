@@ -519,6 +519,27 @@ function isSearchIntent(text, lower) {
 
   if (/^(search|look\s*up|lookup|find|google)\b/i.test(text)) return true;
   if (/\b(search for|look up|look it up)\b/i.test(lower)) return true;
+  // Shop / product lookup (Amazon, Walmart, magnets, etc.)
+  if (/\b(amazon|walmart|best\s*buy|home\s*depot|ebay)\b/i.test(lower) && /\b(check|search|find|look|buy|price|product|for me)\b/i.test(lower)) {
+    return true;
+  }
+  if (/\b(neodymium|magnet|retrieval|pickup tool|products? you find)\b/i.test(lower) && /\b(amazon|walmart|shop|buy|find|check)\b/i.test(lower)) {
+    return true;
+  }
+  // Year-recall for gig Corolla/Prius
+  if (
+    (/\b(forgot|what|which|remind)\b[\s\S]{0,40}\byears?\b/i.test(lower) || /\bforgot\s+what\s+years?\b/i.test(lower)) &&
+    /\b(corollas?|corrolas?|carollas?|prius|civic|gig|delivery)\b/i.test(lower)
+  ) {
+    return true;
+  }
+  // Locate recommended vehicle
+  if (
+    /\b(locate|find|help\s+me\s+find)\b/i.test(lower) &&
+    /\b(corollas?|corrolas?|carollas?|prius|toyota|recommended|you\s+recommended)\b/i.test(lower)
+  ) {
+    return true;
+  }
   if (
     /\b(what(?:'s| is) happening|latest on|current events|who won)\b/i.test(lower)
   ) {

@@ -1,4 +1,4 @@
-# Gig-vehicle specialist pack — AIPickVault Desktop
+﻿# Gig-vehicle specialist pack — AIPickVault Desktop
 
 **Purpose:** Local expertise so Desktop answers Blake's courier-vehicle questions like a specialist — from this pack + durable memory — not by scraping the web for every turn.
 
@@ -12,10 +12,12 @@
 
 Blake endorsed this framing ("Looks good to me.") — lock it for food/gig car answers. Keep prior endorsements and the expansions below:
 
+- **LOCKED YEARS / TRIM (mandatory):** Toyota **Corolla 2010–2015 LE/SE** is the endorsed safe default for gig/food work. Not XLE-only. Not 2014–2015-only. Do **not** invent "2010–2013 too risky" without tool evidence.
 - **At ~40k miles/year:** Corolla 2010–2015 LE/SE is the **safe default**. Prius Gen 3 (2010–2015) only if hybrid battery SOH is **verified healthy via PPI / battery report**. Unverified Prius → prefer Corolla.
 - **Best pick (when battery verified):** Toyota Prius Gen 3 (2010–2015) **only if** hybrid battery SOH is verified healthy via PPI / battery report. Unverified or weak pack → do **not** rank Prius #1.
 - **Runner-up / safest default:** Toyota Corolla 2010–2015 LE/SE — boring-reliable default when battery health is unknown or at high annual miles (~40k).
 - **TCO miles:** assume **~25–30k miles/year** for multi-app gig ownership cost sketches (not the consumer 15k stereotype); when he states **~40k**, treat Corolla as safe default unless Prius SOH is verified.
+- **~40k mi/yr is ANNUAL USE, not an odometer filter:** Blake doing ~40k miles/year means high *annual* duty cycle. It is **NOT** a hard "under 40k miles on the listing" max-odometer cap. Prefer lower listing miles when possible; higher miles are OK if price, condition, and PPI justify — keep qualitative. Never invent hard odometer caps ("under 40k only", "40k miles max").
 - **Van vs car:** **Cargo van** for Roadie / Amazon Flex (bulk); **sub-$10k car still worth it for food apps** (DoorDash / Uber Eats / Shipt) because van on food days is a fuel penalty — state **qualitatively** (often hundreds of gallons / meaningful $/year). Do **not** invent exact gallon counts or cite "$2,000+" (or similar) as fact unless a tool produced that number.
 - **Geography:** Prefer Alliance / Fort Worth **76177** framing. Do **not** invent ZIP bands like 76102–76140.
 - **Softened TCO / insurance / SOH language (mandatory):**
@@ -24,7 +26,9 @@ Blake endorsed this framing ("Looks good to me.") — lock it for food/gig car a
   - No "guaranteed."
   - No exact gallon arithmetic unless from tools.
   - Use: require PPI / SOH report; if battery health unknown/weak → Corolla; fuel savings can be meaningful but battery risk can erase them at high annual miles.
-- **No fake listings:** never invent Autotrader/Cars.com inventory, VINs, dealer asks, or "verified in Alliance for $X." Point him to filters for Fort Worth / Alliance / 76177.
+- **No fake listings / prices / testimonials:** never invent Autotrader/Cars.com inventory, VINs, dealer asks, example asking prices (e.g. "$8,995 / 37k miles"), fake URLs, or "verified in Alliance for $X." Never claim "I've tested this", "100% of listings", or "100% safe." Point him to filters for Fort Worth / Alliance / 76177.
+- **Year-recall:** If he asks "what years", "forgot what years", or similar for Corolla/Prius gig work → answer **2010–2015 Corolla LE/SE** (and Prius Gen3 only with verified battery) from this pack. Do not invent a narrower year window.
+- **Locate / find the recommended Corolla or Prius:** The pack recommendation **exists** (Corolla 2010–2015 LE/SE default; Prius Gen3 only if SOH verified). Never say "no specific Corolla was previously recommended." Restate the pack pick, then offer listing search filters (Autotrader/Cars.com near 76177) or use live search tools — never invent listings.
 - **Corolla can win TCO** if the Prius battery is unverified or bad — say that explicitly (especially at ~40k mi/yr).
 - **Civic 2011–2013 oil dilution:** pack heuristic, labeled **estimate / verify** on PPI — not folklore presented as fact.
 
@@ -44,7 +48,7 @@ When the DFW used market allows (inventory swings — **never invent a specific 
 | Rank | Vehicle | Why for gig | Watch-outs |
 |------|---------|-------------|------------|
 | 1* | Toyota Prius Gen 3 (2010–2015) | Best stop-go mpg for food loops when healthy | **\*Only if** hybrid battery SOH verified healthy (PPI / battery report). Unverified → demote below Corolla. At ~40k mi/yr prefer Corolla unless verified |
-| Default | Toyota Corolla 2010–2015 LE/SE | Safest default (esp. ~40k mi/yr); cheap parts; proven high-mile; sane insurance | Tight cargo; still do PPI / history |
+| Default | Toyota Corolla 2010–2015 LE/SE | Safest default (esp. ~40k mi/yr); cheap parts; proven high-mile; sane insurance | Tight cargo; still do PPI / history. LE/SE — not XLE-only |
 | Alt | Honda Civic (careful years) | Similar TCO profile to Corolla when healthy | **2011–2013 oil dilution** — pack heuristic: estimate / verify on PPI, not gospel |
 | 3 | Toyota Camry / Honda Accord | More space/comfort for long shifts | Slightly more fuel/insurance than compact; still strong |
 | 4 | Older reliable compact (Fit, Yaris, etc.) if clean | Cheap to run | Parts/airbag/recall diligence; avoid neglected beaters |
@@ -73,7 +77,7 @@ Add: registration, unexpected repairs, opportunity cost of downtime. Prefer "rou
 
 ## 5. Corolla / Civic / Accord tradeoffs
 
-- **Corolla 2010–2015 LE/SE:** safest default food-gig beater — **especially at ~40k mi/yr**; can beat Prius on TCO when Prius battery is unverified/bad; weak cargo.
+- **Corolla 2010–2015 LE/SE:** safest default food-gig beater — **especially at ~40k mi/yr**; can beat Prius on TCO when Prius battery is unverified/bad; weak cargo. Full year window 2010–2015 — never invent "2010–2013 too risky" or shrink to 2014–2015-only without tool evidence.
 - **Civic:** similar; sportier feel; **2011–2013 oil dilution** caveat = estimate/verify via PPI — not a blanket ban.
 - **Accord / Camry:** better for tall drivers / longer highway Flex stretches; still sedan cargo limits.
 - Rank on **his** miles and mix, not badge prestige. US-market Toyotas/Hondas/Hyundais/Kias are not "foreign imports to avoid."
@@ -99,7 +103,7 @@ He **maintains a cargo van** — do not pretend he is starting from zero. Evalua
 Use tools when he asks — or when recommending a buy he might act on:
 
 - **NHTSA / recalls** (VIN when he has a candidate) — search tools; no invented IDs.
-- **Live prices / listings** — do not invent Autotrader/Cars.com URLs or "verified at dealer $X in Alliance." Point him to filters for Fort Worth / Alliance / 76177.
+- **Live prices / listings** — do not invent Autotrader/Cars.com URLs or "verified at dealer $X in Alliance." Point him to filters for Fort Worth / Alliance / 76177 (years **2010–2015**, trims **LE/SE**). Prefer lower miles; do not invent a hard under-40k odometer cap.
 - **Insurance quote** on exact year/trim before purchase (never invent rate percentages).
 - **PPI** + Carfax/service records; **hybrid battery SOH test / report** for any Prius (required before Prius is #1). If battery health unknown/weak → Corolla. No hard invented SOH % cutoffs.
 - Platform vehicle rules (Uber categories, DoorDash bag, Flex/Roadie size).
@@ -108,7 +112,7 @@ Use tools when he asks — or when recommending a buy he might act on:
 
 - Lead with a ranked pick for **his** use (at ~40k → Corolla-default unless Prius SOH verified; otherwise Prius-with-PPI or Corolla-default per endorsed heuristics).
 - Short "Sourced vs estimate": pack heuristic / estimate unless tool results were actually used — never fake market sources.
-- Anti-hallucination: no fake listings, prices, dealer claims, or recall campaign IDs.
+- Anti-hallucination: no fake listings, prices, dealer claims, recall campaign IDs, mileage hard caps, "I've tested this", or "100% safe/listings".
 - **ANTI-FAKE-STATS:** Never invent SOH percentages or hard SOH cutoffs, failure probabilities, "X% of cars", reliability index scores, insurance %, exact gallon/$ fuel-penalty figures, or NHTSA campaign details unless present in tool snippets. Prefer qualitative: battery health varies; require PPI / SOH report; fuel savings can be meaningful but battery risk can erase them at high annual miles.
 - Illustrative ranges OK **only if clearly labeled estimate**; prefer qualitative when unsure.
-- Prefer pack + memory over another SerpAPI round-trip unless verification is needed.
+- Prefer pack + memory over another SerpAPI round-trip unless verification / listing locate is needed.

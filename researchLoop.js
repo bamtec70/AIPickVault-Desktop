@@ -3,9 +3,12 @@
 const {
   shouldUseKnowledgeFirst,
   domainPackPromptSection,
-  loadGigVehicleDomainPack
+  loadGigVehicleDomainPack,
+  isLocateRecommendedVehicleAsk,
+  isYearRecallAsk
 } = require("./domain/gigVehicle");
 const { needsFactualRefresh } = require("./router");
+const { listingSearchQueryFromUrl, isListingSiteUrl } = require("./tools");
 
 /**
  * Multi-step research agent loop for AIPickVault Desktop.
@@ -127,6 +130,17 @@ function rewriteSearchQuery(message, opts) {
     wantsRec;
 
   const queries = [];
+
+  // Locate recommended Corolla/Prius → listing search near 76177
+  if (isLocateRecommendedVehicleAsk(raw) || isLocateRecommendedVehicleAsk(text)) {
+    const modelBit =
+      (text.match(/\b(prius|corollas?|corrolas?|carollas?|civics?|camrys?|accords?)\b/i) || [])[0] ||
+      "Corolla";
+    const model = /prius/i.test(modelBit) ? "Prius" : /civic/i.test(modelBit) ? "Civic" : "Corolla";
+    queries.push(model + " 2010-2015 LE SE for sale Fort Worth 76177");
+    queries.push("site:autotrader.com Toyota " + model + " 2010-2015 near 76177");
+    queries.push("site:cars.com Toyota " + model + " 2010-2015 used Fort Worth");
+  }
 
   // Recall / NHTSA / battery follow-ups — tight factual queries first
   if (/\b(recall|nhtsa)\b/i.test(text) || (/\bbattery\b/i.test(text) && /\b(prius|toyota|hybrid|generation)\b/i.test(text))) {
@@ -314,6 +328,16 @@ function planTools(route, message) {
         args: {},
         knowledgeFirst: true
       }];
+    }
+    // Locate recommended vehicle: pack + listing search (not pack-only, not invent inventory)
+    if (isLocateRecommendedVehicleAsk(text) || isLocateRecommendedVehicleAsk(rawQuery) || payload.locateRecommendedVehicle) {
+      steps.push({
+        id: "domain",
+        tool: "domain",
+        label: "Gig-vehicle domain pack",
+        args: {},
+        knowledgeFirst: false
+      });
     }
     const multiAngle = !knowledgeFirst && wantsRec && (costRel || rewritten.gig.isGig || isVehicleAsk(rawQuery));
 
@@ -566,12 +590,25 @@ function buildWeatherSynthesisPrompt(message, bag) {
 
 function buildFetchSynthesisPrompt(message, bag) {
   const parts = [];
+  const page = bag.page || {};
+  const listingSite = !!(page.listingSite || (page.url && isListingSiteUrl(page.url)));
+  const listings = Array.isArray(page.listings) ? page.listings : [];
   parts.push(`You are AIPickVault Desktop — a general local research assistant. Review the fetched webpage for Blake.`);
   parts.push(`Hard rules:`);
   parts.push(`- You CAN view/analyze websites when page content is provided below. Never say you cannot view websites.`);
-  parts.push(`- Give real design/content feedback: clarity, tone, structure, trust signals, CTAs, what works / what to improve.`);
-  parts.push(`- Base feedback on the extracted title + text. If text is thin or fetch failed, say so clearly.`);
-  parts.push(`- Do NOT claim you are limited to vehicle recommendations, cost/maintenance analysis, or research-only vehicle advice.`);
+  if (listingSite) {
+    parts.push(`- This is a VEHICLE LISTING SEARCH / RESULTS page (Autotrader, Cars.com, CarGurus, etc.).`);
+    parts.push(`- Summarize VEHICLES FOR SALE from the extracted listing candidates / text ONLY: year, trim, price, mileage, dealer/location, link when present.`);
+    parts.push(`- NEVER pivot into new-car trim/package marketing explainers (e.g. "Make it Mine", LE vs XLE feature essays) unless the page is actually a trim guide — and even then say so.`);
+    parts.push(`- If structured listings are present, lead with a short table/list of those cars. If HTML was thin / JS-heavy with few sale cards, say so honestly and suggest a web-search fallback or ask Blake to paste 2–3 listing cards — do NOT invent inventory.`);
+    parts.push(`- Do not invent asking prices, miles, or dealer claims absent from the extract.`);
+    parts.push(`- ~40k mi/yr (Blake's annual use) is NOT a hard listing odometer cap. Prefer lower miles; higher OK if price/condition/PPI justify.`);
+  } else {
+    parts.push(`- Give real design/content feedback: clarity, tone, structure, trust signals, CTAs, what works / what to improve.`);
+  }
+  parts.push(`- Base feedback on the extracted title + text (+ listing candidates). If text is thin or fetch failed, say so clearly.`);
+  parts.push(`- On fetch failure (HTTP 403/blocked): short human message + practical next step (web search for listings near 76177, or paste 2–3 cards). NEVER lecture about .env or API keys for a public webpage HTTP 403.`);
+  parts.push(`- Do NOT claim you are limited to vehicle recommendations. No "Fort Worth Local Advisor" branding.`);
   parts.push(`- Do not invent quotes or sections that are not in the extracted text.`);
   parts.push(`- No raw JSON. Short structured sections.`);
   parts.push(``);
@@ -584,17 +621,31 @@ function buildFetchSynthesisPrompt(message, bag) {
     if (bag.page.error) {
       parts.push(`Fetch failed: ${bag.page.error}`);
       if (bag.page.url) parts.push(`URL: ${bag.page.url}`);
+      if (bag.page.fallbackSearchQuery) {
+        parts.push(`Suggested search fallback query: ${bag.page.fallbackSearchQuery}`);
+      }
+      parts.push(`Tell Blake the site blocked the fetch; offer to search the open web for similar listings near 76177 OR ask him to paste 2–3 listing cards. No .env / API-key advice.`);
     } else {
       parts.push(`Fetched page:`);
       parts.push(`URL: ${bag.page.finalUrl || bag.page.url || "(unknown)"}`);
       if (bag.page.title) parts.push(`Title: ${bag.page.title}`);
       if (bag.page.truncated) parts.push(`(Extract truncated for size.)`);
+      if (bag.page.jsHeavy) parts.push(`Note: page looked JS-heavy / thin on listing cards.`);
+      if (listings.length) {
+        parts.push(`Structured listing candidates (${listings.length}):`);
+        parts.push(JSON.stringify(listings.slice(0, 12), null, 2));
+      }
       parts.push(`Extracted text:`);
       parts.push(String(bag.page.text || "").slice(0, 10000));
     }
   } else {
     parts.push(``);
     parts.push(`No page content was retrieved.`);
+  }
+  if (Array.isArray(bag.web) && bag.web.length) {
+    parts.push(``);
+    parts.push(`Web search fallback results (use if fetch failed or listings were thin):`);
+    parts.push(formatWebResults(bag.web));
   }
   if (bag.errors && bag.errors.length) {
     parts.push(``);
@@ -608,13 +659,53 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
   if (intent === "weather") return buildWeatherSynthesisPrompt(message, bag);
   if (intent === "fetch") return buildFetchSynthesisPrompt(message, bag);
 
+  if (intent === "stock" || intent === "stock_compare" || intent === "news") {
+    const parts = [];
+    parts.push("You are AIPickVault Desktop — a general local research assistant. Answer clearly for Blake.");
+    parts.push("Hard rules:");
+    parts.push("- Never brand yourself \"Fort Worth Local Advisor\" (or similar).");
+    parts.push("- No gig-vehicle / Corolla / DoorDash asides unless the user asked about that.");
+    parts.push("- Use ONLY the tool data below; do not invent prices or headlines.");
+    parts.push("- Cite titles + links from the lists when present. No raw JSON. Short structured sections.");
+    parts.push("");
+    parts.push("User question:");
+    parts.push(message);
+    parts.push("");
+    parts.push("Intent: " + intent);
+    if (bag.news && bag.news.length) {
+      parts.push("");
+      parts.push("News results:");
+      parts.push(formatNewsResults(bag.news));
+    }
+    if (bag.stocks && Object.keys(bag.stocks).length) {
+      parts.push("");
+      parts.push("Stock / finance data:");
+      for (const [sym, data] of Object.entries(bag.stocks)) {
+        parts.push(sym + ":");
+        parts.push(JSON.stringify(data, null, 2));
+      }
+    }
+    if (bag.web && bag.web.length) {
+      parts.push("");
+      parts.push("Web search results:");
+      parts.push(formatWebResults(bag.web));
+    }
+    if (bag.errors && bag.errors.length) {
+      parts.push("");
+      parts.push("Tool notes:");
+      for (const e of bag.errors) parts.push("- " + e.tool + ": " + e.error);
+    }
+    return parts.join("\n");
+  }
+
   const parts = [];
   const gig = extractGigUseCase(message);
   const criteria = extractCriteria(message);
   const budget = extractBudget(message);
   const vehicle = isVehicleAsk(message);
 
-  parts.push(`You are a sharp local advisor for Blake in the Fort Worth / Alliance area (76177), Texas. Think hard, then answer decisively.`);
+  parts.push(`You are AIPickVault Desktop — a general local research assistant for Blake (Fort Worth / Alliance 76177). Think hard, then answer decisively.`);
+  parts.push(`- Never brand yourself "Fort Worth Local Advisor" (or similar). No gig-vehicle asides unless this turn is about that subject.`);
   parts.push(`You are a general local research assistant — NOT vehicle-only. Gig/vehicle specialist framing applies only because this turn is about that subject.`);
   parts.push(`Reasoning (do this mentally; do NOT dump chain-of-thought as the reply):`);
   parts.push(`- Weigh tradeoffs for HIS situation (high miles, city stop-go, cargo, Texas heat/insurance) — not generic brochure talk.`);
@@ -637,7 +728,11 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
   parts.push(`- Do not over-claim NHTSA sourcing. If campaign details are not in tool snippets, say you do not have the campaign text — do not fabricate IDs or rates.`);
   parts.push(`- Rough annual cost buckets (fuel, insurance, maintenance, tires) OK if labeled estimates with uncertainty. Illustrative ranges OK only if clearly labeled estimate; prefer qualitative. No fake precision. Do NOT double-count buckets (e.g. tires twice).`);
   parts.push(`- Prefer Alliance / Fort Worth 76177 framing; never invent ZIP bands (e.g. 76102–76140).`);
-  parts.push(`- At ~40k mi/yr: Corolla 2010–2015 LE/SE is safe default; Prius Gen3 only with verified healthy battery via PPI/battery report.`);
+  parts.push(`- LOCKED: Corolla **2010–2015 LE/SE** (not XLE-only, not 2014–2015-only). At ~40k mi/yr Corolla is safe default; Prius Gen3 only with verified healthy battery via PPI/battery report.`);
+  parts.push(`- ~40k mi/yr is ANNUAL USE — never invent a hard under-40k listing odometer cap. Prefer lower miles; higher OK if price/condition/PPI justify.`);
+  parts.push(`- Never invent example asking prices/URLs, claim "I've tested this", "100% of listings", "100% safe", or "2010–2013 too risky" without tool evidence.`);
+  parts.push(`- Year-recall ("what years" / "forgot what years") → answer 2010–2015 LE/SE from the domain pack.`);
+  parts.push(`- Locate/find the recommended Corolla/Prius → the pack recommendation EXISTS (Corolla 2010–2015 LE/SE default). Never say "no specific Corolla was previously recommended." Restate pack pick + listing filters / tool links near 76177; never invent listings.`);
   parts.push(`- If sources are thin/spammy, still advise like a decisive courier-aware local using solid US used-car knowledge. Do not apologize about tools.`);
   parts.push(`- Ban nonsense: do NOT call mainstream US-market cars (Honda, Toyota, Hyundai, Kia, etc.) "foreign imports to avoid." Judge reliability, parts cost, MPG.`);
   parts.push(`- No raw JSON. Short structured sections.`);
@@ -656,7 +751,7 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
     parts.push(`- Best Choice / Runner Up / Third Choice (Avoid only for truly bad gig picks: thirsty trucks, project cars).`);
   }
 
-  if (vehicle || gig.isGig || wantsRecommendation || bag.domainPack) {
+  if (vehicle || gig.isGig || wantsRecommendation || bag.domainPack || isLocateRecommendedVehicleAsk(message) || isYearRecallAsk(message)) {
     parts.push(``);
     parts.push(`Knowledge-first mode: reason from the local domain pack + durable memory first. Use tool results only to verify live facts (recalls, prices, listings, insurance). Do not invent listings.`);
     parts.push(domainPackPromptSection());
@@ -818,6 +913,61 @@ async function runResearchLoop(opts) {
         stream.note(`${s.label} unavailable${outcome.error ? ": " + String(outcome.error).slice(0, 80) : ""}. Continuing…`);
       }
 
+      // Listing-site fetch 403/blocked/thin → fallback web search from URL params
+      if (
+        s.tool === "fetch" &&
+        !outcome.ok &&
+        steps.length < MAX_STEPS &&
+        !steps.some((x) => x.tool === "search")
+      ) {
+        const page = outcome.data || bag.page || {};
+        const url = (s.args && s.args.url) || page.url || (route.payload && route.payload.url) || "";
+        const shouldFallback =
+          page.blocked ||
+          page.listingSite ||
+          isListingSiteUrl(url) ||
+          /HTTP\s*(403|429|503)/i.test(String(outcome.error || "")) ||
+          /JavaScript-rendered|blocked|Timed out/i.test(String(outcome.error || ""));
+        if (shouldFallback) {
+          const q =
+            page.fallbackSearchQuery ||
+            listingSearchQueryFromUrl(url) ||
+            "Toyota Corolla 2010-2015 for sale Fort Worth 76177";
+          steps.splice(i + 1, 0, {
+            id: "search_fetch_fallback",
+            tool: "search",
+            label: "Web search (listing fetch fallback)",
+            args: { query: q },
+            mergeWeb: true
+          });
+          stream.note(`Listing fetch blocked/thin — falling back to search: "${q}"`);
+        }
+      }
+
+      // Thin listing HTML with zero candidates → also search fallback
+      if (
+        s.tool === "fetch" &&
+        outcome.ok &&
+        outcome.data &&
+        outcome.data.listingSite &&
+        (!outcome.data.listings || outcome.data.listings.length === 0) &&
+        (outcome.data.jsHeavy || outcome.data.fallbackSearchQuery) &&
+        steps.length < MAX_STEPS &&
+        !steps.some((x) => x.tool === "search")
+      ) {
+        const q = outcome.data.fallbackSearchQuery || listingSearchQueryFromUrl(outcome.data.url || (s.args && s.args.url));
+        if (q) {
+          steps.splice(i + 1, 0, {
+            id: "search_fetch_fallback",
+            tool: "search",
+            label: "Web search (thin listing page)",
+            args: { query: q },
+            mergeWeb: true
+          });
+          stream.note(`Listing page had few sale cards — adding search: "${q}"`);
+        }
+      }
+
       if (
         !autoFollowUpDone && s.tool === "search" && s.id === "search" && outcome.kind === "web" &&
         steps.length < MAX_STEPS && !steps.some((x) => x.id === "search2" || x.id === "search3") &&
@@ -870,9 +1020,29 @@ async function runResearchLoop(opts) {
       return { text, model, plan: steps, bag };
     }
     const failBits = bag.errors.map((e) => e.error).filter(Boolean);
-    const text = failBits.length > 0
-      ? `I couldn't retrieve reliable live data right now (${failBits[0]}). Check API keys in .env and try again.`
-      : "I couldn't retrieve reliable live data right now. Please try again in a moment.";
+    const publicHttpFail = failBits.some((e) => /HTTP\s*(403|429|503)/i.test(String(e)) || /blocked|Timed out fetching/i.test(String(e)));
+    const listingFail = failBits.some((e) => /autotrader|cars\.com|cargurus|carvana|listing/i.test(String(e))) ||
+      (route.intent === "fetch" && route.payload && route.payload.url && isListingSiteUrl(route.payload.url));
+    let text;
+    if (publicHttpFail || listingFail) {
+      const fbq = (bag.page && bag.page.fallbackSearchQuery) ||
+        (route.payload && route.payload.url && listingSearchQueryFromUrl(route.payload.url)) ||
+        null;
+      const httpBit = (failBits[0] && (String(failBits[0]).match(/HTTP\s*\d+/) || []))[0];
+      text = listingFail
+        ? ("That listing site blocked the page fetch" +
+            (httpBit ? " (" + httpBit + ")" : "") +
+            ". I can search the open web for similar Corolla/Prius listings near 76177, or you can paste 2–3 listing cards here." +
+            (fbq ? " Suggested search: " + fbq + "." : ""))
+        : "I couldn't load that page right now (site blocked or timed out). Try another link, or paste the key text — no API-key setup needed for public pages.";
+    } else if (failBits.length > 0) {
+      const looksMissingKey = /not configured|\.env|API key/i.test(String(failBits[0]));
+      text = looksMissingKey
+        ? `I couldn't retrieve reliable live data right now (${failBits[0]}). Check API keys in .env and try again.`
+        : `I couldn't retrieve reliable live data right now (${failBits[0]}). Please try again in a moment.`;
+    } else {
+      text = "I couldn't retrieve reliable live data right now. Please try again in a moment.";
+    }
     return { text, model, plan: steps, bag };
   }
 
@@ -896,5 +1066,5 @@ module.exports = {
   describePlan, rewriteSearchQuery, rewriteNewsTopic, resultsSeemThinOrOffTopic,
   buildSynthesisPrompt, buildWeatherSynthesisPrompt, buildFetchSynthesisPrompt, extractBudget, extractGigUseCase, extractCriteria,
   hasCostReliabilityLanguage, rankWebResultsForSynth, scoreWebResultForSynth, MAX_STEPS,
-  shouldUseKnowledgeFirst
+  shouldUseKnowledgeFirst, isLocateRecommendedVehicleAsk, isYearRecallAsk
 };
