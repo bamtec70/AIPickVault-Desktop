@@ -128,6 +128,16 @@
         color: #88ffcc;
       }
 
+      #memoryHint {
+        text-align: center;
+        margin-top: -12px;
+        margin-bottom: 12px;
+        color: #668899;
+        font-size: 13px;
+        text-shadow: none;
+        min-height: 1.2em;
+      }
+
       .ai-msg .stream-body {
         display: block;
       }
@@ -251,6 +261,7 @@
 </select>
 
 <div id="modelDisplay">Model: loading...</div>
+<div id="memoryHint"></div>
 
 <div id="chat"></div>
 
@@ -267,8 +278,20 @@
     const clearBtn = document.getElementById('clearBtn');
     const modelDisplay = document.getElementById('modelDisplay');
     const modelSelect = document.getElementById('modelSelect');
+    const memoryHint = document.getElementById('memoryHint');
 
     let isStreaming = false;
+    let memoryTurns = 0;
+
+    function updateMemoryHint(turns) {
+        memoryTurns = typeof turns === 'number' ? turns : memoryTurns;
+        if (!memoryHint) return;
+        if (memoryTurns > 0) {
+            memoryHint.textContent = 'Remembering ' + memoryTurns + ' turn' + (memoryTurns === 1 ? '' : 's');
+        } else {
+            memoryHint.textContent = '';
+        }
+    }
 
     const WELCOME_TEXT =
         "Welcome to AIPickVault Desktop\n\n" +
@@ -431,6 +454,9 @@
                 if (payload && payload.model) {
                     modelDisplay.textContent = 'Model: ' + payload.model;
                 }
+                if (payload && typeof payload.memoryTurns === 'number') {
+                    updateMemoryHint(payload.memoryTurns);
+                }
                 if (!streamUi.hasToken && payload && payload.text) {
                     streamUi.setFinal(payload.text);
                 }
@@ -457,6 +483,9 @@
 
             if (response && response.model) {
                 modelDisplay.textContent = 'Model: ' + response.model;
+            }
+            if (response && typeof response.memoryTurns === 'number') {
+                updateMemoryHint(response.memoryTurns);
             }
 
             // If events already finished the UI, just clean up.
@@ -489,8 +518,16 @@
     sendBtn.addEventListener('click', sendMessage);
 
     if (clearBtn) {
-        clearBtn.addEventListener('click', () => {
+        clearBtn.addEventListener('click', async () => {
             if (isStreaming) return;
+            try {
+                if (window.api && typeof window.api.clearConversation === 'function') {
+                    await window.api.clearConversation();
+                }
+            } catch (err) {
+                console.error(err);
+            }
+            updateMemoryHint(0);
             chat.replaceChildren();
             appendMessage('ai', 'Chat cleared.');
         });

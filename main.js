@@ -9,20 +9,130 @@ const {
 } = require("./tools");
 const { routeMessage } = require("./router");
 
-const SYSTEM_PROMPT = `
-            You are AIPickVault Desktop.
+const SYSTEM_PROMPT = `You are AIPickVault Desktop — a research assistant by Blake Mauldin in Fort Worth, Texas.
 
-            You are an AI research and search assistant.
+Identity
+- If asked who you are or your name: say you are AIPickVault Desktop, compiled by Blake Mauldin in Fort Worth, Texas.
+- Never claim to be Grok, ChatGPT, Claude, or any other product.
+- Never say you are Qwen, Llama, Ollama, or name the underlying engine unless the user explicitly asks how you run.
 
-            Never identify yourself as Qwen, Llama, Ollama, Grok, or any underlying model.
+Style
+- Be direct and specific. No filler, no throat-clearing, no "Great question!" or "I'd be happy to help".
+- Lead with the answer. Keep prose tight.
+- Admit uncertainty. Prefer "I don't know" or "the data doesn't show X" over guessing.
+- Never invent live prices, headlines, weather numbers, or news. If tool/data is missing, say so.
+- When tool results or source lists are provided, use them and cite titles with links. Do not dump raw JSON.
+- Prefer structured answers for stocks, weather, and research (clear headings/sections).
+- For follow-ups, use prior conversation context; resolve pronouns from history when obvious.`;
 
-            If asked your name, respond:
-            "My name is AIPickVault Desktop compiled by Blake Mauldin in Fort Worth, Texas."
+/** Max user+assistant messages retained (oldest dropped first). */
+const MAX_HISTORY_MESSAGES = 16;
+/** Rough char budget for history (≈ tokens×4); drop oldest when exceeded. */
+const MAX_HISTORY_CHARS = 24000;
 
-            Your primary function is to help users search, research, analyze information, compare sources, and answer questions.
+/** @type {{ role: 'user'|'assistant', content: string }[]} */
+let conversationHistory = [];
 
-            Do not invent fictional background stories.
-          `;
+function clearConversationMemory() {
+  conversationHistory = [];
+  console.log("Conversation memory cleared");
+}
+
+function historyCharCount() {
+  return conversationHistory.reduce((n, m) => n + (m.content ? m.content.length : 0), 0);
+}
+
+function trimConversationHistory() {
+  while (conversationHistory.length > MAX_HISTORY_MESSAGES) {
+    conversationHistory.shift();
+  }
+  while (conversationHistory.length > 2 && historyCharCount() > MAX_HISTORY_CHARS) {
+    conversationHistory.shift();
+  }
+  // Keep pairs aligned: if we start on assistant, drop it
+  if (conversationHistory.length && conversationHistory[0].role === "assistant") {
+    conversationHistory.shift();
+  }
+}
+
+function rememberTurn(userText, assistantText) {
+  conversationHistory.push({ role: "user", content: String(userText || "") });
+  conversationHistory.push({
+    role: "assistant",
+    content: String(assistantText || "")
+  });
+  trimConversationHistory();
+}
+
+function memoryTurnCount() {
+  return Math.floor(conversationHistory.length / 2);
+}
+
+/**
+ * Short follow-ups with pronouns — prefer chat+history over a wrong re-route.
+ * Strong new targets (explicit ticker, compare, search command, new city) still win.
+ */
+function looksLikeFollowUp(message) {
+  const lower = String(message || "").toLowerCase().trim();
+  const words = lower.split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.length > 14) return false;
+  return /\b(that|this|it|they|those|them|the same|same (?:one|stock|thing|place)|what about (?:it|that|them|the)|how about (?:it|that)|and (?:the|for|tomorrow|today|there)|more (?:detail|details|info|on|about)|tell me more|the forecast|that stock|that one|same for)\b/i.test(
+    lower
+  );
+}
+
+function hasStrongNewToolTarget(message, route) {
+  const text = String(message || "");
+  const lower = text.toLowerCase();
+
+  if (route.intent === "stock_compare") return true;
+
+  if (route.intent === "stock" && route.payload && route.payload.symbol) {
+    const sym = String(route.payload.symbol);
+    if (new RegExp(`\\b${sym}\\b`, "i").test(text)) return true;
+    if (/\$[A-Za-z]{1,5}\b/.test(text)) return true;
+  }
+
+  if (route.intent === "weather") {
+    if (/\bin\s+[A-Za-z]{2,}/.test(text)) return true;
+    // Explicit new weather ask without pronoun-only follow-up
+    if (
+      /\b(weather|forecast|temperature)\b/i.test(lower) &&
+      !looksLikeFollowUp(text)
+    ) {
+      return true;
+    }
+  }
+
+  if (route.intent === "search" && /^(search|look\s*up|lookup|find|google)\b/i.test(text)) {
+    return true;
+  }
+
+  if (
+    route.intent === "news" &&
+    /\b(news|headlines|breaking)\b/i.test(lower) &&
+    !/\b(that|those|the same|it)\b/i.test(lower)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function maybePreferChatHistory(message, route) {
+  if (conversationHistory.length === 0) return route;
+  if (!looksLikeFollowUp(message)) return route;
+  if (hasStrongNewToolTarget(message, route)) return route;
+  console.log(
+    "FOLLOW-UP → chat with history (was:",
+    route.intent,
+    ")"
+  );
+  return {
+    intent: "chat",
+    payload: { tools: [], followUp: true }
+  };
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -58,18 +168,22 @@ function friendlyOllamaError(err, model) {
 }
 
 /**
- * Chat / synthesis provider with optional token streaming.
- *
- * Same (prompt, model) interface so an xAI (or other) adapter can replace
- * this later without changing IPC or tool handlers. Identity stays
- * AIPickVault Desktop — never claim Grok.
- *
- * @param {string} message
+ * Core Ollama chat with a full messages[] array (streaming).
+ * @param {Array<{role: string, content: string}>} messages
  * @param {string} [model]
- * @param {(delta: string) => void} [onChunk] called with each content delta
- * @returns {Promise<string>} full assembled reply
+ * @param {(delta: string) => void} [onChunk]
+ * @returns {Promise<string>}
  */
-async function askOllama(message, model = "qwen3:30b", onChunk) {
+async function askOllamaMessages(messages, model = "qwen3:30b", onChunk) {
+  const payloadMessages = Array.isArray(messages) ? messages : [];
+  console.log(
+    "OLLAMA_MESSAGES:",
+    payloadMessages.length,
+    "(history turns:",
+    memoryTurnCount(),
+    ")"
+  );
+
   let response;
   try {
     response = await fetch("http://127.0.0.1:11434/api/chat", {
@@ -80,16 +194,7 @@ async function askOllama(message, model = "qwen3:30b", onChunk) {
       body: JSON.stringify({
         model,
         stream: true,
-        messages: [
-          {
-            role: "system",
-            content: SYSTEM_PROMPT
-          },
-          {
-            role: "user",
-            content: message
-          }
-        ]
+        messages: payloadMessages
       })
     });
   } catch (err) {
@@ -127,7 +232,6 @@ async function askOllama(message, model = "qwen3:30b", onChunk) {
   }
 
   if (!response.body || typeof response.body.getReader !== "function") {
-    // Fallback if body is not a web ReadableStream
     const text = await response.text();
     return parseOllamaNdjson(text, model, onChunk);
   }
@@ -175,7 +279,6 @@ async function askOllama(message, model = "qwen3:30b", onChunk) {
     if (sawError) break;
   }
 
-  // Flush trailing buffer (final line without newline)
   if (!sawError && buffer.trim()) {
     try {
       const obj = JSON.parse(buffer.trim());
@@ -206,6 +309,25 @@ async function askOllama(message, model = "qwen3:30b", onChunk) {
   }
 
   return full || "No response received.";
+}
+
+/**
+ * Single-prompt helper (wrapper). Builds system + optional history + user.
+ * @param {string} prompt
+ * @param {string} [model]
+ * @param {(delta: string) => void} [onChunk]
+ * @param {{ includeHistory?: boolean }} [opts]
+ */
+async function askOllama(prompt, model = "qwen3:30b", onChunk, opts) {
+  const includeHistory = !opts || opts.includeHistory !== false;
+  const messages = [{ role: "system", content: SYSTEM_PROMPT }];
+  if (includeHistory && conversationHistory.length) {
+    for (const m of conversationHistory) {
+      messages.push({ role: m.role, content: m.content });
+    }
+  }
+  messages.push({ role: "user", content: String(prompt || "") });
+  return askOllamaMessages(messages, model, onChunk);
 }
 
 /** Parse a complete NDJSON body (used when stream reader unavailable). */
@@ -267,6 +389,37 @@ function makeStream(event) {
   };
 }
 
+function formatWebResults(results) {
+  if (!Array.isArray(results) || results.length === 0) return "(none)";
+  return results
+    .map((r, i) => {
+      const title = r.title || "Untitled";
+      const link = r.link || r.url || "";
+      const snippet = r.snippet || "";
+      return `${i + 1}. ${title}\n   Link: ${link}\n   Snippet: ${snippet}`;
+    })
+    .join("\n\n");
+}
+
+function formatNewsResults(news) {
+  if (!Array.isArray(news) || news.length === 0) return "(none)";
+  return news
+    .map((a, i) => {
+      const title = a.title || "Untitled";
+      const source = a.source || "";
+      const url = a.url || a.link || "";
+      return `${i + 1}. ${title}\n   Source: ${source}\n   Link: ${url}`;
+    })
+    .join("\n\n");
+}
+
+function withResultMeta(result) {
+  return {
+    ...result,
+    memoryTurns: memoryTurnCount()
+  };
+}
+
 async function handleWeather(message, model, payload, stream) {
   const location = payload.location || "Fort Worth";
   const weather = await getWeather(location);
@@ -284,34 +437,22 @@ async function handleWeather(message, model, payload, stream) {
   }
 
   const weatherAnswer = await askOllama(
-    `You are a helpful weather assistant.
+    `Answer this weather question using ONLY the weather data below. Prefer a short structured layout (Current / Today / Tomorrow as relevant). Do not invent numbers. Do not show JSON.
 
-      User Question:
-      ${message}
+User question:
+${message}
 
-      Weather Data:
-      ${JSON.stringify(weather, null, 2)}
-
-      Answer the user's weather question using the weather data provided.
-
-      If the question is about tomorrow,
-      use the tomorrow forecast.
-
-      If the question is about today,
-      use today's weather.
-
-      Do not show JSON.
-
-      Be concise and friendly.
-      `,
+Weather data:
+${JSON.stringify(weather, null, 2)}`,
     model,
     stream.chunk
   );
 
-  return {
+  rememberTurn(message, weatherAnswer);
+  return withResultMeta({
     text: weatherAnswer,
     model
-  };
+  });
 }
 
 async function handleNews(message, model, payload, stream) {
@@ -319,60 +460,47 @@ async function handleNews(message, model, payload, stream) {
   const news = await getNews(topic);
 
   if (!Array.isArray(news) || news.length === 0) {
-    return {
-      text: `No ${topic} news was found.`,
+    const text = `No ${topic} news was found.`;
+    rememberTurn(message, text);
+    return withResultMeta({
+      text,
       model: "News Tool"
-    };
+    });
   }
 
-  let formatted = `📰 ${topic.toUpperCase()} NEWS\n\n`;
+  const formatted = formatNewsResults(news);
 
-  news.forEach((article, index) => {
-    formatted += `━━━━━━━━━━━━━━━━━━\n`;
-    formatted += `${index + 1}. ${article.title}\n\n`;
-    formatted += `Source: ${article.source}\n`;
-    formatted += `Link: ${article.url}\n\n`;
-  });
-
-  stream.note(
-    `Found ${news.length} ${topic} headlines. Summarizing…`
-  );
+  stream.note(`Found ${news.length} ${topic} headlines. Summarizing…`);
 
   const newsAnswer = await askOllama(
-    `You are a news analyst.
+    `You are synthesizing live news for the user. Use the headlines below. Cite each important story by title and include its link. Do not dump raw JSON. Be concise; explain why it matters.
 
-  User Request:
-  ${message}
+User request:
+${message}
 
-  News Results:
-
-  ${formatted}
-
-  Summarize the most important stories.
-
-  Explain why they matter.
-
-  Do not simply list headlines.
-
-  Provide a concise and natural response.
-  `,
+News results:
+${formatted}`,
     model,
     stream.chunk
   );
 
-  return {
+  rememberTurn(message, newsAnswer);
+  return withResultMeta({
     text: newsAnswer,
     model
-  };
+  });
 }
 
 async function handleStockCompare(message, model, payload, stream) {
   const [symbol1, symbol2] = payload.symbols || [];
   if (!symbol1 || !symbol2) {
-    return {
-      text: "Specify two stock symbols to compare, e.g. compare AAPL vs MSFT.",
+    const text =
+      "Specify two stock symbols to compare, e.g. compare AAPL vs MSFT.";
+    rememberTurn(message, text);
+    return withResultMeta({
+      text,
       model: "Stock Tool"
-    };
+    });
   }
 
   console.log("COMPARING:", symbol1, "VS", symbol2);
@@ -385,67 +513,53 @@ async function handleStockCompare(message, model, payload, stream) {
   stream.note(`Comparing ${symbol1} vs ${symbol2} — analyzing…`);
 
   const comparisonAnswer = await askOllama(
-    `
-You are an elite stock analyst.
-
-Compare these two stocks.
-
-${symbol1}
-
-Stock Data:
-${JSON.stringify(stock1, null, 2)}
-
-News:
-${JSON.stringify(news1, null, 2)}
-
-${symbol2}
-
-Stock Data:
-${JSON.stringify(stock2, null, 2)}
-
-News:
-${JSON.stringify(news2, null, 2)}
-
-Generate:
+    `Compare these two stocks using ONLY the data below. Use actual prices from the data; do not invent. Structure:
 
 STOCK COMPARISON
-
 Winner:
-(stock symbol)
-
 Current Price Comparison
-
 Risk Comparison
-
 Outlook Comparison
-
 Strengths of ${symbol1}
-
 Strengths of ${symbol2}
-
 Which Stock Looks Better Right Now?
 
-Provide a concise professional report.
+Cite news by title when relevant. No JSON dump.
 
-Do not output JSON.
-`,
+User question:
+${message}
+
+${symbol1} stock:
+${JSON.stringify(stock1, null, 2)}
+
+${symbol1} news:
+${formatNewsResults(Array.isArray(news1) ? news1 : [])}
+
+${symbol2} stock:
+${JSON.stringify(stock2, null, 2)}
+
+${symbol2} news:
+${formatNewsResults(Array.isArray(news2) ? news2 : [])}`,
     model,
     stream.chunk
   );
 
-  return {
+  rememberTurn(message, comparisonAnswer);
+  return withResultMeta({
     text: comparisonAnswer,
     model
-  };
+  });
 }
 
 async function handleStock(message, model, payload, stream) {
   const symbol = payload.symbol;
   if (!symbol) {
-    return {
-      text: "Specify a stock symbol or company name.",
+    const text = "Specify a stock symbol or company name.";
+    rememberTurn(message, text);
+    return withResultMeta({
+      text,
       model: "Stock Tool"
-    };
+    });
   }
 
   console.log("REQUESTING STOCK:", symbol);
@@ -473,100 +587,43 @@ async function handleStock(message, model, payload, stream) {
   }
 
   const stockAnswer = await askOllama(
-    `You are an elite stock research analyst.
+    `Produce a stock report using ONLY the data below. Use real values from Stock Data; do not invent prices. Cite news by title/link when relevant. No JSON dump.
 
-      User Question:
-      ${message}
+Structure:
+${symbol} STOCK REPORT
+Current Price:
+Daily Change:
+Open:
+Day High:
+Day Low:
+Previous Close:
+Trend: (Bullish / Bearish / Neutral)
+Risk Score: (1-10)
+Confidence: (Low / Medium / High)
+Outlook: (Bullish / Neutral / Bearish)
+Positive Catalysts:
+Risks:
+News Impact:
+Investor Sentiment:
+Bottom Line:
 
-      Stock Data:
-      ${JSON.stringify(stock, null, 2)}
+User question:
+${message}
 
-      Related News:
-      ${JSON.stringify(stockNews, null, 2)}
+Stock data:
+${JSON.stringify(stock, null, 2)}
 
-      Generate a report using this structure:
-
-      ${symbol} STOCK REPORT
-
-      Current Price:
-      Use the actual value from Stock Data.
-
-      Daily Change:
-      Use the actual value from Stock Data.
-
-      Open:
-      Use the actual value from Stock Data.
-
-      Day High:
-      Use the actual value from Stock Data.
-
-      Day Low:
-      Use the actual value from Stock Data.
-
-      Previous Close:
-      Use the actual value from Stock Data.
-
-      Trend:
-      Bullish, Bearish, or Neutral
-
-      Risk Score:
-      Provide a score from 1-10.
-
-      Confidence:
-      Choose Low, Medium, or High.
-
-      Outlook:
-      Choose Bullish, Neutral, or Bearish.
-
-      Positive Catalysts:
-      • item
-      • item
-      • item
-
-      Risks:
-      • item
-      • item
-      • item
-
-      News Impact:
-      (short explanation)
-
-      Investor Sentiment:
-      Positive, Neutral, or Negative
-
-      Bottom Line:
-      (short conclusion)
-
-      Base your analysis on both the stock data and the news.
-      Risk Score Guidance:
-
-      1-3 = Low Risk
-      4-6 = Moderate Risk
-      7-8 = High Risk
-      9-10 = Very High Risk
-
-      Confidence Guidance:
-
-      Low = Limited evidence
-      Medium = Mixed evidence
-      High = Strong supporting evidence
-
-      Outlook:
-
-      Bullish = More positive than negative
-      Neutral = Mixed outlook
-      Bearish = More negative than positive
-
-      Do not output JSON.
-      `,
+Related news:
+${formatNewsResults(Array.isArray(stockNews) ? stockNews : [])}`,
     model,
     stream.chunk
   );
 
-  return {
+  rememberTurn(message, stockAnswer);
+  return withResultMeta({
     text: stockAnswer,
     model
-  };
+  });
 }
 
 async function handleSearch(message, model, payload, stream) {
@@ -593,49 +650,42 @@ async function handleSearch(message, model, payload, stream) {
   const hasWebResults =
     Array.isArray(results) && results.length > 0 && !results.error;
   const hasNewsResults =
-    Array.isArray(newsResults) && newsResults.length > 0 && !newsResults.error;
+    Array.isArray(newsResults) &&
+    newsResults.length > 0 &&
+    !newsResults.error;
 
   if (!hasWebResults && !hasNewsResults) {
     if (wantsRecommendation) {
       stream.note("No live results — drafting a recommendation…");
       const recommendationAnswer = await askOllama(
-        `You are an expert recommendation engine.
+        `Give a practical recommendation for the user. Be direct. Label uncertainty. Do not invent live prices or availability.
 
-     User Question:
-     ${message}
+User question:
+${message}
 
-     Provide:
-
-     Best Choice:
-     Why it is best.
-
-     Runner Up:
-     Why it is good.
-
-     Third Choice:
-     Why it is good.
-
-     Avoid:
-     What should be avoided and why.
-
-     Use practical real-world reasoning.
-
-     Answer naturally.
-     `,
+Provide:
+Best Choice: …
+Runner Up: …
+Third Choice: …
+Avoid: …`,
         model,
         stream.chunk
       );
 
-      return {
+      rememberTurn(message, recommendationAnswer);
+      return withResultMeta({
         text: recommendationAnswer,
         model
-      };
+      });
     }
 
-    return {
-      text: "I couldn't retrieve reliable search results right now. Please try again in a moment.",
+    const text =
+      "I couldn't retrieve reliable search results right now. Please try again in a moment.";
+    rememberTurn(message, text);
+    return withResultMeta({
+      text,
       model
-    };
+    });
   }
 
   const nWeb = hasWebResults ? results.length : 0;
@@ -647,53 +697,48 @@ async function handleSearch(message, model, payload, stream) {
   );
 
   const searchAnswer = await askOllama(
-    `You are an investigative research analyst.
+    `Synthesize an answer from the sources below. Rules:
+- Lead with the answer.
+- Use the sources; do not invent facts, prices, or headlines not present.
+- Cite at least the most important sources by title and include their links.
+- Prefer recent/official sources when present.
+- Distinguish fact from opinion.
+- No raw JSON. No filler phrases like "Key points include" or "According to reports".
 
-     User Question:
-     ${message}
+User question:
+${message}
 
-     Web Search Results:
-     ${JSON.stringify(hasWebResults ? results : [], null, 2)}
+Web search results:
+${formatWebResults(hasWebResults ? results : [])}
 
-     News Results:
-     ${JSON.stringify(hasNewsResults ? newsResults : [], null, 2)}
-
-     Instructions:
-
-     - Use both Web Search Results and News Results when present.
-     - Prefer the most recent credible information available.
-     - Prefer official sources when available.
-     - Distinguish facts from opinions.
-     - Mention uncertainty only when it materially affects the answer.
-     - Do not expose your analysis process.
-
-     When answering:
-
-     1. Lead with the answer immediately.
-     2. Explain why it matters.
-     3. Explain the key drivers behind the situation.
-     4. Connect the facts together into a single narrative.
-     5. Avoid bullet lists unless they improve clarity.
-     6. Avoid phrases like:
-        - "Key points include"
-        - "According to reports"
-        - "Several sources suggest"
-     7. Sound like a knowledgeable analyst speaking directly to the user.
-     8. Do not repeat information unnecessarily.
-     9. Do not expose your research process.
-     10. Be concise but insightful.
-
-     Answer naturally.
-     `,
+News results:
+${formatNewsResults(hasNewsResults ? newsResults : [])}`,
     model,
     stream.chunk
   );
 
-  return {
+  rememberTurn(message, searchAnswer);
+  return withResultMeta({
     text: searchAnswer,
     model
-  };
+  });
 }
+
+async function handleChat(message, model, stream) {
+  const answer = await askOllama(message, model, stream.chunk, {
+    includeHistory: true
+  });
+  rememberTurn(message, answer);
+  return withResultMeta({
+    text: answer,
+    model
+  });
+}
+
+ipcMain.handle("clear-conversation", async () => {
+  clearConversationMemory();
+  return { ok: true, memoryTurns: 0 };
+});
 
 ipcMain.handle("ask-model", async (event, data) => {
   const stream = makeStream(event);
@@ -703,16 +748,24 @@ ipcMain.handle("ask-model", async (event, data) => {
     const message = String((data && data.message) || "").trim();
 
     if (!message) {
-      const result = {
+      const result = withResultMeta({
         text: "Please enter a message.",
         model
-      };
+      });
       stream.done(result);
       return result;
     }
 
-    const route = routeMessage(message);
+    let route = routeMessage(message);
+    route = maybePreferChatHistory(message, route);
     console.log("ROUTE:", JSON.stringify(route));
+    console.log(
+      "MEMORY_BEFORE:",
+      conversationHistory.length,
+      "msgs /",
+      memoryTurnCount(),
+      "turns"
+    );
 
     let result;
     switch (route.intent) {
@@ -723,7 +776,12 @@ ipcMain.handle("ask-model", async (event, data) => {
         result = await handleNews(message, model, route.payload, stream);
         break;
       case "stock_compare":
-        result = await handleStockCompare(message, model, route.payload, stream);
+        result = await handleStockCompare(
+          message,
+          model,
+          route.payload,
+          stream
+        );
         break;
       case "stock":
         result = await handleStock(message, model, route.payload, stream);
@@ -732,15 +790,18 @@ ipcMain.handle("ask-model", async (event, data) => {
         result = await handleSearch(message, model, route.payload, stream);
         break;
       case "chat":
-      default: {
-        const answer = await askOllama(message, model, stream.chunk);
-        result = {
-          text: answer,
-          model
-        };
+      default:
+        result = await handleChat(message, model, stream);
         break;
-      }
     }
+
+    console.log(
+      "MEMORY_AFTER:",
+      conversationHistory.length,
+      "msgs /",
+      memoryTurnCount(),
+      "turns"
+    );
 
     stream.done(result);
     return result;
@@ -748,10 +809,10 @@ ipcMain.handle("ask-model", async (event, data) => {
     console.error(err);
     const text = friendlyOllamaError(err, model);
     stream.error(text);
-    return {
+    return withResultMeta({
       text,
       model: "Error"
-    };
+    });
   }
 });
 

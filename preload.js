@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("api", {
   askModel: (data) => ipcRenderer.invoke("ask-model", data),
 
+  clearConversation: () => ipcRenderer.invoke("clear-conversation"),
+
   onAskModelNote: (callback) => {
     const handler = (_event, payload) => {
       if (typeof callback === "function") callback(payload);
