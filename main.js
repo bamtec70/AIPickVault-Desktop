@@ -304,13 +304,34 @@ news.forEach((article, index) => {
       ${symbol} STOCK REPORT
 
       Current Price:
-      (value)
+      Use the actual value from Stock Data.
 
       Daily Change:
-      (value)
+      Use the actual value from Stock Data.
+
+      Open:
+      Use the actual value from Stock Data.
+
+      Day High:
+      Use the actual value from Stock Data.
+
+      Day Low:
+      Use the actual value from Stock Data.
+
+      Previous Close:
+      Use the actual value from Stock Data.
 
       Trend:
       Bullish, Bearish, or Neutral
+
+      Risk Score:
+      Provide a score from 1-10.
+
+      Confidence:
+      Choose Low, Medium, or High.
+
+      Outlook:
+      Choose Bullish, Neutral, or Bearish.
 
       Positive Catalysts:
       • item
@@ -332,6 +353,24 @@ news.forEach((article, index) => {
       (short conclusion)
 
       Base your analysis on both the stock data and the news.
+      Risk Score Guidance:
+
+      1-3 = Low Risk
+      4-6 = Moderate Risk
+      7-8 = High Risk
+      9-10 = Very High Risk
+
+      Confidence Guidance:
+
+      Low = Limited evidence
+      Medium = Mixed evidence
+      High = Strong supporting evidence
+
+      Outlook:
+
+      Bullish = More positive than negative
+      Neutral = Mixed outlook
+      Bearish = More negative than positive
 
       Do not output JSON.
       `,

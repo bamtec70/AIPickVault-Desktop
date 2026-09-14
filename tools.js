@@ -1,10 +1,13 @@
 // tools.js
 
 // ⭐ Insert your REAL API keys here
-const WEATHER_API_KEY = "0b721eb18473448286623712261009";            // weatherapi.com
-const NEWS_API_KEY    = "602dbf36ebc94b14ba488d39e3b5574b";          // newsapi.org
-const STOCK_API_KEY   = "CSF3BZNH4EJ4W4RW";                          // alphaadvantage.co
-const SEARCH_API_KEY  = "b0954d6f9afa562f456e118ebfcefc2453df98bb09135ab5db25d8ab24c7173d"; // serpapi.com
+require("dotenv").config();
+
+const WEATHER_API_KEY = process.env.WEATHER_API_KEY;
+const NEWS_API_KEY = process.env.NEWS_API_KEY;
+const STOCK_API_KEY = process.env.STOCK_API_KEY;
+const SEARCH_API_KEY = process.env.SEARCH_API_KEY;
+const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
 // ⭐ Node v24+ has global fetch — no import needed
 
@@ -65,29 +68,33 @@ async function getNews(topic) {
 async function getStock(symbol) {
 
   const url =
-    `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${STOCK_API_KEY}`;
+    `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
 
   const res = await fetch(url);
   const data = await res.json();
 
   console.log(
-    "STOCK DATA:",
+    "FINNHUB STOCK DATA:",
     JSON.stringify(data, null, 2)
   );
 
-  const quote = data["Global Quote"];
-
-  if (!quote || Object.keys(quote).length === 0) {
+  if (!data || data.c === 0) {
     return {
       error: "No stock data found"
     };
   }
 
   return {
-    symbol: quote["01. symbol"],
-    price: quote["05. price"],
-    change: quote["09. change"],
-    changePercent: quote["10. change percent"]
+    symbol,
+
+    price: data.c,
+    change: data.d,
+    changePercent: `${data.dp}%`,
+
+    open: data.o,
+    high: data.h,
+    low: data.l,
+    previousClose: data.pc
   };
 }
 
