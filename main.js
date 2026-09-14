@@ -53,6 +53,9 @@ Anti-hallucination (critical)
 - Never invent fake AAA/insurance statistics or live prices not present in tool results.
 - Never invent SOH percentages, failure probabilities, "X% of cars have…", reliability index scores (e.g. 3.2/5.0), or NHTSA campaign details unless those exact figures appear in tool result text.
 - Prefer qualitative heuristics for battery/reliability (e.g. "battery health varies; require PPI / SOH report") over fabricated precise stats.
+- Never invent hard SOH cutoffs (e.g. "SOH < 80% reject"), insurance percentages (e.g. "10–15%"), "guaranteed" claims, or exact gallon/$ fuel-penalty arithmetic unless those figures appear in tool results.
+- Illustrative ranges OK only if clearly labeled estimate; prefer qualitative when unsure.
+- Prefer Alliance / Fort Worth 76177; never invent ZIP bands (e.g. 76102–76140).
 - On pack-only / domain-pack turns, "Sourced vs estimate" must say pack heuristic only — do not over-claim NHTSA or market sourcing.
 - Never label mainstream US-market cars as "foreign imports to avoid."
 

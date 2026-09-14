@@ -29,15 +29,16 @@ function loadGigVehicleDomainPack() {
 }
 
 const FALLBACK_PACK = [
-  "Gig/delivery vehicle heuristics for Blake (Fort Worth / Alliance 76177).",
+  "Gig/delivery vehicle heuristics for Blake (Fort Worth / Alliance 76177 — never invent ZIP bands like 76102-76140).",
   "Platforms: DoorDash, Uber, Uber Eats, Roadie, Amazon Flex, Shipt.",
   "Maintains a cargo van; also evaluating sub-$10k car for food/gig delivery.",
-  "Rank by annual cost, reliability, maintenance for ~25-30k mi/yr multi-app gig use.",
-  "Endorsed (2026-09-14): Prius Gen3 2010-2015 only if hybrid battery SOH verified via PPI; else Corolla 2010-2015 LE/SE safest default.",
+  "Rank by annual cost, reliability, maintenance for ~25-30k mi/yr multi-app gig use; at ~40k mi/yr Corolla 2010-2015 LE/SE is safe default.",
+  "Endorsed (Blake 2026-09-14, expanded): At ~40k mi/yr Corolla is safe default; Prius Gen3 2010-2015 only if hybrid battery SOH verified healthy via PPI/battery report; unverified Prius → prefer Corolla.",
+  "Cargo van for Roadie/Amazon Flex (bulk); sub-$10k car still worth it for food apps — van on food days is a fuel penalty (qualitative: often hundreds of gallons / meaningful $/year; no fake exact gallon counts or $2,000+ as fact).",
   "Corolla can win TCO if Prius battery unverified/bad. Civic 2011-2013 oil dilution = estimate/verify.",
-  "Van for Roadie/Flex; car for food apps (van fuel penalty on food days).",
+  "Soften precision: no hard SOH < 80% reject; no 10-15% insurance; no guaranteed; no exact gallon arithmetic unless from tools. Require PPI/SOH report; if battery unknown/weak → Corolla; fuel savings can be meaningful but battery risk can erase them at high annual miles.",
   "Never invent listings/prices/URLs; pack-only answers are pack heuristic/estimate; no double-counted cost buckets.",
-  "ANTI-FAKE-STATS: never invent SOH %, failure probabilities, 'X% of cars', reliability index scores, or NHTSA campaign details unless present in tool text. Prefer qualitative: battery health varies; require PPI / SOH report."
+  "ANTI-FAKE-STATS: never invent SOH %, hard SOH cutoffs, failure probabilities, 'X% of cars', reliability index scores, insurance %, exact fuel-penalty figures, or NHTSA campaign details unless present in tool text. Prefer qualitative: battery health varies; require PPI / SOH report. Illustrative ranges OK only if clearly labeled estimate."
 ].join("\n");
 
 const NAMED_GIG_MODELS =
@@ -250,7 +251,7 @@ function domainPackPromptSection() {
   return (
     "\n\nLocal domain knowledge pack (prefer this for general advice; tools only to verify live facts):\n" +
     loadGigVehicleDomainPack() +
-    "\n\nAnti-fake-stats (mandatory): Never invent SOH percentages, failure probabilities, \"X% of cars\", reliability index scores, or NHTSA campaign details unless those exact figures appear in tool result text. Prefer qualitative heuristics (e.g. battery health varies; require PPI / SOH report). On pack-only turns, Sourced vs estimate = pack heuristic only."
+    "\n\nAnti-fake-stats (mandatory): Never invent SOH percentages or hard SOH cutoffs (e.g. SOH < 80% reject), failure probabilities, \"X% of cars\", reliability index scores, insurance %, exact gallon/$ fuel-penalty figures, or NHTSA campaign details unless those exact figures appear in tool result text. Prefer qualitative heuristics (require PPI / SOH report; if battery unknown/weak → Corolla; fuel savings can be meaningful but battery risk can erase them at high annual miles). Illustrative ranges OK only if clearly labeled estimate; prefer qualitative. On pack-only turns, Sourced vs estimate = pack heuristic only. Prefer Alliance / Fort Worth 76177 — never invent ZIP bands."
   );
 }
 

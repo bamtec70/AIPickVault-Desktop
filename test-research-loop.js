@@ -257,6 +257,8 @@ assert.strictEqual(
   assert.match(prompt, /Sourced vs estimate|estimates clearly/i);
   assert.match(prompt, /NHTSA|recall campaign/i);
   assert.match(prompt, /ANTI-FAKE-STATS|Never invent SOH|SOH percentages|failure probabilities|reliability index/i);
+  assert.match(prompt, /Illustrative ranges|clearly labeled estimate|prefer qualitative/i);
+  assert.match(prompt, /hard SOH cutoff|SOH < 80%|never invent ZIP|76102|40k/i);
   assert.match(prompt, /double-count|tires twice/i);
   assert.match(prompt, /for-sale|verified at dealer|Autotrader|Cars\.com/i);
   assert.match(prompt, /domain knowledge pack|Knowledge-first/i);
@@ -279,6 +281,12 @@ assert.strictEqual(
   assert.match(pack, /25.?30k|25k.?30k/i);
   assert.match(pack, /oil dilution/i);
   assert.match(pack, /fuel penalty/i);
+  assert.match(pack, /40k|~40k/i);
+  assert.match(pack, /76177/i);
+  assert.match(pack, /76102|ZIP band/i);
+  assert.match(pack, /SOH.*80%|hard cutoff|no hard/i);
+  assert.match(pack, /qualitative|hundreds of gallons|meaningful/i);
+  assert.match(pack, /Illustrative ranges|clearly labeled estimate/i);
   assert.strictEqual(shouldUseKnowledgeFirst("best car for DoorDash under $10000", { intent: "search", payload: { wantsRecommendation: true } }), true);
   assert.strictEqual(shouldUseKnowledgeFirst("Prius vs Corolla if you do ~40k miles/year", { intent: "search", payload: { wantsRecommendation: true } }), true);
   assert.strictEqual(needsFactualRefresh("what about Prius battery recall?"), true);
