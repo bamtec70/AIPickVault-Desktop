@@ -205,7 +205,99 @@ news.forEach((article, index) => {
 }
     
 
-    // STOCKS
+// STOCK COMPARISON
+if (
+  lower.startsWith("compare ") &&
+  lower.includes(" vs ")
+) {
+
+  const comparisonText =
+    lower.replace(/^compare\s+/i, "");
+
+  const [left, right] =
+    comparisonText.split(" vs ");
+
+  const symbol1 =
+    left.trim().toUpperCase();
+
+  const symbol2 =
+    right.trim().toUpperCase();
+
+  console.log(
+    "COMPARING:",
+    symbol1,
+    "VS",
+    symbol2
+  );
+
+  const stock1 =
+    await getStock(symbol1);
+
+  const stock2 =
+    await getStock(symbol2);
+
+  const news1 =
+    await getNews(symbol1);
+
+  const news2 =
+    await getNews(symbol2);
+
+  const comparisonAnswer =
+    await askOllama(
+`
+You are an elite stock analyst.
+
+Compare these two stocks.
+
+${symbol1}
+
+Stock Data:
+${JSON.stringify(stock1, null, 2)}
+
+News:
+${JSON.stringify(news1, null, 2)}
+
+${symbol2}
+
+Stock Data:
+${JSON.stringify(stock2, null, 2)}
+
+News:
+${JSON.stringify(news2, null, 2)}
+
+Generate:
+
+STOCK COMPARISON
+
+Winner:
+(stock symbol)
+
+Current Price Comparison
+
+Risk Comparison
+
+Outlook Comparison
+
+Strengths of ${symbol1}
+
+Strengths of ${symbol2}
+
+Which Stock Looks Better Right Now?
+
+Provide a concise professional report.
+
+Do not output JSON.
+`,
+      model
+    );
+
+  return {
+    text: comparisonAnswer,
+    model
+  };
+}
+    
+// STOCKS
     const directTicker =
       /^[A-Z]{1,5}$/.test(message.trim());
     if (
