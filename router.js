@@ -22,9 +22,10 @@
  * Architecture (Grok-like path; identity stays AIPickVault Desktop):
  *
  * - Cheap and sync so unit tests do not need Ollama or paid APIs.
- * - payload.tools is a hint list for this turn. Handlers may call one or more
- *   tools (search + news + synthesize is already used for research turns).
- *   A later planner can fill multiple tools without changing this shape.
+ * - payload.tools is a hint list for this turn. researchLoop.planTools() turns
+ *   that into an ordered 1–3 step plan (search → news → optional finance).
+ *   Handlers run the loop: plan → execute (sequential / limited parallel) →
+ *   synthesize one cited answer. Chat / pure chitchat skips the loop.
  * - Streaming can wrap the same intents; routing stays out of the token path.
  * - Chat provider (askOllama today) is behind a (prompt, model) interface so
  *   an xAI adapter can swap in later. Never claim to be Grok in prompts.
@@ -56,7 +57,7 @@ const TICKER_STOPWORDS = new Set([
   "A", "I", "AM", "AN", "AS", "AT", "BE", "BY", "DO", "GO", "HE", "IF", "IN",
   "IS", "IT", "ME", "MY", "NO", "OF", "ON", "OR", "SO", "TO", "UP", "US", "WE",
   "THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL", "CAN", "HER", "WAS",
-  "ONE", "OUR", "OUT", "DAY", "GET", "HAS", "HIM", "HIS", "HOW", "MAN", "NEW",
+  "ONE", "OUR", "OUT", "DAY", "GET", "HAS", "HEY", "HI", "HIM", "HIS", "HOW", "MAN", "NEW",
   "NOW", "OLD", "SEE", "TWO", "WAY", "WHO", "BOY", "DID", "ITS", "LET", "PUT",
   "SAY", "SHE", "TOO", "USE", "WHY", "YES", "YET", "ANY", "ASK", "BIG", "FEW",
   "GOT", "HAD", "HOT", "MAY", "OWN", "TRY", "BEST", "FROM", "HAVE", "JUST",
@@ -314,6 +315,20 @@ function newsTopic(lower) {
   return "technology";
 }
 
+function isPureChitchat(lower) {
+  if (/^(hi|hello|hey|thanks|thank you|good morning|good night)(?:[\s,.!]|$)/i.test(lower)) {
+    return true;
+  }
+  if (
+    /\b(who are you|what(?:'s| is) your name|your (?:name|primary function))\b/i.test(
+      lower
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function isChatish(lower) {
   if (
     /\b(who are you|what(?:'s| is) your name|your (?:name|primary function)|how do you work)\b/i.test(
@@ -386,6 +401,14 @@ function routeMessage(message) {
   const lower = text.toLowerCase();
   const rec = wantsRecommendation(lower);
 
+  // Greetings / identity skip the tool loop entirely.
+  if (isPureChitchat(lower)) {
+    return {
+      intent: "chat",
+      payload: { tools: [], wantsRecommendation: rec }
+    };
+  }
+
   const compare = extractCompareSymbols(text);
   if (compare) {
     return {
@@ -421,12 +444,22 @@ function routeMessage(message) {
 
   if (isSearchIntent(text, lower)) {
     const tools = shouldAlsoSearchNews(lower) ? ["search", "news"] : ["search"];
+    // Optional 3rd finance step when research text names a known company + market words.
+    const optionalSymbol = findAlias(lower);
+    if (
+      optionalSymbol &&
+      tools.length < 3 &&
+      /\b(stock|shares?|price|market|earnings|ticker)\b/i.test(lower)
+    ) {
+      tools.push("stock");
+    }
     return {
       intent: "search",
       payload: {
         query: extractSearchQuery(text),
         tools,
-        wantsRecommendation: rec
+        wantsRecommendation: rec,
+        optionalSymbol: optionalSymbol || undefined
       }
     };
   }

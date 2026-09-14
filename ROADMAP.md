@@ -87,4 +87,4 @@ Standalone research assistant (Electron + Ollama). Design Webber owns this repo 
 
 ### v1.1 (active)
 
-- Forecast weather, Finnhub stocks, structured reports, comparison, search quality, basic recommendations, UI harden, intent router, qwen3:30b default
+- Forecast weather, Finnhub stocks, structured reports, comparison, search quality, basic recommendations, UI harden, intent router, qwen3:30b default, streaming, memory, multi-step research loop

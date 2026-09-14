@@ -8,6 +8,7 @@ const {
   webSearch
 } = require("./tools");
 const { routeMessage } = require("./router");
+const { runResearchLoop, planTools, formatNewsResults } = require("./researchLoop");
 
 const SYSTEM_PROMPT = `You are AIPickVault Desktop — a research assistant by Blake Mauldin in Fort Worth, Texas.
 
@@ -389,111 +390,50 @@ function makeStream(event) {
   };
 }
 
-function formatWebResults(results) {
-  if (!Array.isArray(results) || results.length === 0) return "(none)";
-  return results
-    .map((r, i) => {
-      const title = r.title || "Untitled";
-      const link = r.link || r.url || "";
-      const snippet = r.snippet || "";
-      return `${i + 1}. ${title}\n   Link: ${link}\n   Snippet: ${snippet}`;
-    })
-    .join("\n\n");
+function toolFns() {
+  return { getWeather, getNews, getStock, webSearch };
 }
 
-function formatNewsResults(news) {
-  if (!Array.isArray(news) || news.length === 0) return "(none)";
-  return news
-    .map((a, i) => {
-      const title = a.title || "Untitled";
-      const source = a.source || "";
-      const url = a.url || a.link || "";
-      return `${i + 1}. ${title}\n   Source: ${source}\n   Link: ${url}`;
-    })
-    .join("\n\n");
-}
+async function runRoutedResearch(message, model, route, stream) {
+  const loopResult = await runResearchLoop({
+    message,
+    route,
+    model,
+    stream,
+    askOllama,
+    tools: toolFns()
+  });
 
-function withResultMeta(result) {
-  return {
-    ...result,
-    memoryTurns: memoryTurnCount()
-  };
+  const text = loopResult.text || "No response received.";
+  rememberTurn(message, text);
+  return withResultMeta({
+    text,
+    model: loopResult.model || model,
+    plan: (loopResult.plan || []).map((s) => s.tool)
+  });
 }
 
 async function handleWeather(message, model, payload, stream) {
-  const location = payload.location || "Fort Worth";
-  const weather = await getWeather(location);
-  console.log("WEATHER DATA:", weather);
-
-  if (weather && !weather.error) {
-    const bits = [];
-    if (weather.location) bits.push(weather.location);
-    if (weather.current) {
-      bits.push(
-        `${weather.current.temp_f}°F, ${weather.current.condition || ""}`.trim()
-      );
-    }
-    stream.note(`Weather data loaded${bits.length ? ": " + bits.join(" — ") : ""}.`);
-  }
-
-  const weatherAnswer = await askOllama(
-    `Answer this weather question using ONLY the weather data below. Prefer a short structured layout (Current / Today / Tomorrow as relevant). Do not invent numbers. Do not show JSON.
-
-User question:
-${message}
-
-Weather data:
-${JSON.stringify(weather, null, 2)}`,
+  return runRoutedResearch(
+    message,
     model,
-    stream.chunk
+    { intent: "weather", payload: payload || {} },
+    stream
   );
-
-  rememberTurn(message, weatherAnswer);
-  return withResultMeta({
-    text: weatherAnswer,
-    model
-  });
 }
 
 async function handleNews(message, model, payload, stream) {
-  const topic = payload.topic || "technology";
-  const news = await getNews(topic);
-
-  if (!Array.isArray(news) || news.length === 0) {
-    const text = `No ${topic} news was found.`;
-    rememberTurn(message, text);
-    return withResultMeta({
-      text,
-      model: "News Tool"
-    });
-  }
-
-  const formatted = formatNewsResults(news);
-
-  stream.note(`Found ${news.length} ${topic} headlines. Summarizing…`);
-
-  const newsAnswer = await askOllama(
-    `You are synthesizing live news for the user. Use the headlines below. Cite each important story by title and include its link. Do not dump raw JSON. Be concise; explain why it matters.
-
-User request:
-${message}
-
-News results:
-${formatted}`,
+  return runRoutedResearch(
+    message,
     model,
-    stream.chunk
+    { intent: "news", payload: payload || {} },
+    stream
   );
-
-  rememberTurn(message, newsAnswer);
-  return withResultMeta({
-    text: newsAnswer,
-    model
-  });
 }
 
 async function handleStockCompare(message, model, payload, stream) {
-  const [symbol1, symbol2] = payload.symbols || [];
-  if (!symbol1 || !symbol2) {
+  const symbols = (payload && payload.symbols) || [];
+  if (!symbols[0] || !symbols[1]) {
     const text =
       "Specify two stock symbols to compare, e.g. compare AAPL vs MSFT.";
     rememberTurn(message, text);
@@ -503,14 +443,30 @@ async function handleStockCompare(message, model, payload, stream) {
     });
   }
 
-  console.log("COMPARING:", symbol1, "VS", symbol2);
+  const gatherRoute = {
+    intent: "stock_compare",
+    payload: { symbols, tools: ["stock", "news"] }
+  };
+  const planned = planTools(gatherRoute, message);
 
-  const stock1 = await getStock(symbol1);
-  const stock2 = await getStock(symbol2);
-  const news1 = await getNews(symbol1);
-  const news2 = await getNews(symbol2);
+  // Gather via multi-step loop (parallel quotes + news) without synthesizing yet.
+  const loopResult = await runResearchLoop({
+    message,
+    route: gatherRoute,
+    model,
+    stream,
+    askOllama,
+    tools: toolFns(),
+    skipSynthesize: true
+  });
 
-  stream.note(`Comparing ${symbol1} vs ${symbol2} — analyzing…`);
+  const bag = loopResult.bag || {};
+  const [symbol1, symbol2] = symbols;
+  const stock1 = (bag.stocks && bag.stocks[symbol1]) || { error: "No data" };
+  const stock2 = (bag.stocks && bag.stocks[symbol2]) || { error: "No data" };
+  const newsList = Array.isArray(bag.news) ? bag.news : [];
+
+  stream.note("Comparing " + symbol1 + " vs " + symbol2 + " — synthesizing…");
 
   const comparisonAnswer = await askOllama(
     `Compare these two stocks using ONLY the data below. Use actual prices from the data; do not invent. Structure:
@@ -524,7 +480,7 @@ Strengths of ${symbol1}
 Strengths of ${symbol2}
 Which Stock Looks Better Right Now?
 
-Cite news by title when relevant. No JSON dump.
+Cite news by title and include real links when relevant. Never invent URLs. No JSON dump.
 
 User question:
 ${message}
@@ -532,14 +488,11 @@ ${message}
 ${symbol1} stock:
 ${JSON.stringify(stock1, null, 2)}
 
-${symbol1} news:
-${formatNewsResults(Array.isArray(news1) ? news1 : [])}
-
 ${symbol2} stock:
 ${JSON.stringify(stock2, null, 2)}
 
-${symbol2} news:
-${formatNewsResults(Array.isArray(news2) ? news2 : [])}`,
+Related news:
+${formatNewsResults(newsList)}`,
     model,
     stream.chunk
   );
@@ -547,181 +500,27 @@ ${formatNewsResults(Array.isArray(news2) ? news2 : [])}`,
   rememberTurn(message, comparisonAnswer);
   return withResultMeta({
     text: comparisonAnswer,
-    model
+    model,
+    plan: planned.map((s) => s.tool)
   });
 }
 
 async function handleStock(message, model, payload, stream) {
-  const symbol = payload.symbol;
-  if (!symbol) {
-    const text = "Specify a stock symbol or company name.";
-    rememberTurn(message, text);
-    return withResultMeta({
-      text,
-      model: "Stock Tool"
-    });
-  }
-
-  console.log("REQUESTING STOCK:", symbol);
-
-  const stock = await getStock(symbol);
-  console.log("REQUESTING NEWS:", symbol);
-
-  let stockNews = [];
-  try {
-    stockNews = await getNews(symbol);
-  } catch (err) {
-    console.log("NEWS ERROR:", err.message);
-  }
-
-  console.log("STOCK NEWS:", JSON.stringify(stockNews, null, 2));
-
-  if (stock && !stock.error && stock.price != null) {
-    stream.note(
-      `${symbol}: $${stock.price}` +
-        (stock.changePercent != null ? ` (${stock.changePercent})` : "") +
-        " — building report…"
-    );
-  } else {
-    stream.note(`Looking up ${symbol}…`);
-  }
-
-  const stockAnswer = await askOllama(
-    `Produce a stock report using ONLY the data below. Use real values from Stock Data; do not invent prices. Cite news by title/link when relevant. No JSON dump.
-
-Structure:
-${symbol} STOCK REPORT
-Current Price:
-Daily Change:
-Open:
-Day High:
-Day Low:
-Previous Close:
-Trend: (Bullish / Bearish / Neutral)
-Risk Score: (1-10)
-Confidence: (Low / Medium / High)
-Outlook: (Bullish / Neutral / Bearish)
-Positive Catalysts:
-Risks:
-News Impact:
-Investor Sentiment:
-Bottom Line:
-
-User question:
-${message}
-
-Stock data:
-${JSON.stringify(stock, null, 2)}
-
-Related news:
-${formatNewsResults(Array.isArray(stockNews) ? stockNews : [])}`,
+  return runRoutedResearch(
+    message,
     model,
-    stream.chunk
+    { intent: "stock", payload: payload || {} },
+    stream
   );
-
-  rememberTurn(message, stockAnswer);
-  return withResultMeta({
-    text: stockAnswer,
-    model
-  });
 }
 
 async function handleSearch(message, model, payload, stream) {
-  const query = payload.query || message;
-  const tools = payload.tools || ["search"];
-  const wantsRecommendation = !!payload.wantsRecommendation;
-
-  console.log("SEARCH QUERY:", query);
-  console.log("SEARCH TOOLS:", tools);
-
-  const useNews = tools.includes("news");
-
-  console.log("STARTING WEB SEARCH...");
-  const results = await webSearch(query);
-  console.log("WEB SEARCH FINISHED");
-
-  let newsResults = [];
-  if (useNews) {
-    console.log("STARTING NEWS SEARCH...");
-    newsResults = await getNews(query);
-    console.log("NEWS SEARCH FINISHED");
-  }
-
-  const hasWebResults =
-    Array.isArray(results) && results.length > 0 && !results.error;
-  const hasNewsResults =
-    Array.isArray(newsResults) &&
-    newsResults.length > 0 &&
-    !newsResults.error;
-
-  if (!hasWebResults && !hasNewsResults) {
-    if (wantsRecommendation) {
-      stream.note("No live results — drafting a recommendation…");
-      const recommendationAnswer = await askOllama(
-        `Give a practical recommendation for the user. Be direct. Label uncertainty. Do not invent live prices or availability.
-
-User question:
-${message}
-
-Provide:
-Best Choice: …
-Runner Up: …
-Third Choice: …
-Avoid: …`,
-        model,
-        stream.chunk
-      );
-
-      rememberTurn(message, recommendationAnswer);
-      return withResultMeta({
-        text: recommendationAnswer,
-        model
-      });
-    }
-
-    const text =
-      "I couldn't retrieve reliable search results right now. Please try again in a moment.";
-    rememberTurn(message, text);
-    return withResultMeta({
-      text,
-      model
-    });
-  }
-
-  const nWeb = hasWebResults ? results.length : 0;
-  const nNews = hasNewsResults ? newsResults.length : 0;
-  stream.note(
-    `Sources ready (${nWeb} web` +
-      (useNews ? `, ${nNews} news` : "") +
-      "). Analyzing…"
-  );
-
-  const searchAnswer = await askOllama(
-    `Synthesize an answer from the sources below. Rules:
-- Lead with the answer.
-- Use the sources; do not invent facts, prices, or headlines not present.
-- Cite at least the most important sources by title and include their links.
-- Prefer recent/official sources when present.
-- Distinguish fact from opinion.
-- No raw JSON. No filler phrases like "Key points include" or "According to reports".
-
-User question:
-${message}
-
-Web search results:
-${formatWebResults(hasWebResults ? results : [])}
-
-News results:
-${formatNewsResults(hasNewsResults ? newsResults : [])}`,
+  return runRoutedResearch(
+    message,
     model,
-    stream.chunk
+    { intent: "search", payload: payload || {} },
+    stream
   );
-
-  rememberTurn(message, searchAnswer);
-  return withResultMeta({
-    text: searchAnswer,
-    model
-  });
 }
 
 async function handleChat(message, model, stream) {

@@ -12,6 +12,9 @@ It runs locally with Electron + Ollama. It is **not** integrated with aipickvaul
 - News analysis (NewsAPI)
 - Stock quotes + structured reports + compare (Finnhub)
 - Recommendation-style answers when search data is thin
+- Multi-step research loop (plan → search/news/finance → cited synthesize)
+- Streaming replies + multi-turn memory (~16 messages)
+- Deterministic intent router (chitchat skips the tool loop)
 
 ## Requirements
 

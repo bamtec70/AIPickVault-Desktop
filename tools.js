@@ -1,4 +1,4 @@
-// tools.js
+﻿// tools.js
 
 require("dotenv").config();
 
@@ -7,10 +7,14 @@ const NEWS_API_KEY = process.env.NEWS_API_KEY;
 const SEARCH_API_KEY = process.env.SEARCH_API_KEY;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
-// ⭐ Node v24+ has global fetch — no import needed
+function missingKey(name) {
+  return { error: `${name} is not configured. Add it to your .env file.` };
+}
 
 // WEATHER TOOL
 async function getWeather(location) {
+  if (!WEATHER_API_KEY) return missingKey("WEATHER_API_KEY");
+
   const url = `https://api.weatherapi.com/v1/forecast.json?key=${WEATHER_API_KEY}&q=${encodeURIComponent(location)}&days=3`;
 
   const res = await fetch(url);
@@ -46,6 +50,8 @@ async function getWeather(location) {
 
 // NEWS TOOL
 async function getNews(topic) {
+  if (!NEWS_API_KEY) return missingKey("NEWS_API_KEY");
+
   const url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(topic)}&apiKey=${NEWS_API_KEY}`;
 
   const res = await fetch(url);
@@ -64,6 +70,7 @@ async function getNews(topic) {
 
 // STOCK TOOL
 async function getStock(symbol) {
+  if (!FINNHUB_API_KEY) return missingKey("FINNHUB_API_KEY");
 
   const url =
     `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
@@ -98,6 +105,8 @@ async function getStock(symbol) {
 
 // SEARCH TOOL
 async function webSearch(query) {
+  if (!SEARCH_API_KEY) return missingKey("SEARCH_API_KEY");
+
   const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${SEARCH_API_KEY}`;
 
   const res = await fetch(url);

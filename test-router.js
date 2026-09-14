@@ -77,6 +77,8 @@ expectIntent("compare apple vs tesla", "stock_compare", (r) => {
 expectIntent("HOW ARE YOU", "chat");
 expectIntent("IT", "chat");
 expectIntent("Who are you?", "chat");
+expectIntent("hi", "chat");
+expectIntent("hello", "chat");
 expectIntent("I ate an apple pie", "chat");
 
 // --- news vs search vs chat
