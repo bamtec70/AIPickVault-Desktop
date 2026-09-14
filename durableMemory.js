@@ -11,6 +11,7 @@ const path = require("path");
 const MAX_FACTS = 40;
 const MAX_CORRECTIONS = 20;
 const MAX_PREFERENCES = 20;
+const MAX_LESSONS = 40;
 
 function defaultMemory() {
   return {
@@ -24,6 +25,7 @@ function defaultMemory() {
     facts: [],
     preferences: [],
     corrections: [],
+    lessons: [],
     work: {
       platforms: [],
       vehicleNotes: []
@@ -51,6 +53,7 @@ function createDurableMemory(getUserDataPath) {
         cache.facts = Array.isArray(raw.facts) ? raw.facts : [];
         cache.preferences = Array.isArray(raw.preferences) ? raw.preferences : [];
         cache.corrections = Array.isArray(raw.corrections) ? raw.corrections : [];
+        cache.lessons = Array.isArray(raw.lessons) ? raw.lessons : [];
         return cache;
       }
     } catch (err) {
@@ -95,6 +98,7 @@ function createDurableMemory(getUserDataPath) {
 
     // Platforms
     const platformMap = [
+      [/\blyft\b/i, "Lyft"],
       [/doordash|door\s*dash/i, "DoorDash"],
       [/uber\s*eats/i, "Uber Eats"],
       [/\buber\b/i, "Uber"],
@@ -170,12 +174,14 @@ function createDurableMemory(getUserDataPath) {
     }
 
     // Corrections / dissatisfaction — remember so we don't repeat the failure mode
-    if (
-      /\b(that was crap|that sucked|terrible answer|wrong|useless|still crap|garbage answer|don't say|never say|stop saying)\b/i.test(
+    const userCorrection =
+      /\b(that was crap|that sucked|terrible answer|wrong|incorrect|inaccurate|useless|still crap|garbage answer|don't say|never say|stop saying|you invented|made that up|hallucinat|not what (?:lyft|uber|doordash) says|that'?s not what)\b/i.test(
         lower
       ) ||
-      /\b(foreign import to avoid)\b/i.test(lower)
-    ) {
+      /\b(foreign import to avoid)\b/i.test(lower);
+    if (userCorrection) {
+      if (!Array.isArray(mem.lessons)) mem.lessons = [];
+      if (!Array.isArray(mem.corrections)) mem.corrections = [];
       uniqPush(
         mem.corrections,
         text.length > 180 ? text.slice(0, 180) + "…" : text,
@@ -195,6 +201,21 @@ function createDurableMemory(getUserDataPath) {
           MAX_CORRECTIONS
         );
       }
+      if (/lyft|uber|doordash|vehicle age|model year|invent/i.test(lower)) {
+        uniqPush(
+          mem.lessons,
+          "User correction: platform vehicle age/eligibility requires live official fetch — never invent year cutoffs or help URLs.",
+          MAX_LESSONS
+        );
+        learned.push("lesson:platform-eligibility");
+      } else {
+        uniqPush(
+          mem.lessons,
+          "User correction: " + (text.length > 160 ? text.slice(0, 160) + "…" : text),
+          MAX_LESSONS
+        );
+        learned.push("lesson:user-correction");
+      }
       learned.push("correction");
     }
 
@@ -213,7 +234,58 @@ function createDurableMemory(getUserDataPath) {
     return assistantText;
   }
 
-  function buildSystemSuffix() {
+  function lessonsFilePath() {
+    try {
+      return path.join(__dirname, "domain", "lessons.md");
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function appendLessonToMarkdown(text, source) {
+    const file = lessonsFilePath();
+    if (!file) return;
+    try {
+      const line =
+        "- (" + new Date().toISOString().slice(0, 10) + ") [" + (source || "runtime") + "] " +
+        String(text || "").replace(/\s+/g, " ").trim() +
+        "\n";
+      let existing = "";
+      try {
+        existing = fs.readFileSync(file, "utf8");
+      } catch (_) {
+        existing =
+          "# Durable lessons — AIPickVault Desktop\n\n" +
+          "Append-only lessons so Desktop improves without external help.\n\n";
+      }
+      if (existing.toLowerCase().includes(String(text || "").toLowerCase().slice(0, 80))) return;
+      fs.writeFileSync(file, existing.trimEnd() + "\n" + line, "utf8");
+    } catch (err) {
+      console.error("lessons.md append error:", err && err.message ? err.message : err);
+    }
+  }
+
+  function addLesson(text, source) {
+    const mem = load();
+    if (!Array.isArray(mem.lessons)) mem.lessons = [];
+    const t = String(text || "").trim();
+    if (!t) return { added: false };
+    const before = mem.lessons.slice();
+    uniqPush(mem.lessons, t, MAX_LESSONS);
+    const added = mem.lessons.join("|") !== before.join("|");
+    if (added) {
+      save();
+      appendLessonToMarkdown(t, source || "self-verify");
+    }
+    return { added, lessons: mem.lessons.slice() };
+  }
+
+  function getLessons() {
+    const mem = load();
+    return Array.isArray(mem.lessons) ? mem.lessons.slice() : [];
+  }
+
+    function buildSystemSuffix() {
     const mem = load();
     const lines = [];
     lines.push("Known user context (durable memory — use it; do not make him re-explain):");
@@ -230,6 +302,10 @@ function createDurableMemory(getUserDataPath) {
     if (mem.corrections && mem.corrections.length) {
       lines.push("Corrections / what NOT to do again:");
       for (const c of mem.corrections.slice(-6)) lines.push(`- ${c}`);
+    }
+    if (mem.lessons && mem.lessons.length) {
+      lines.push("Durable lessons (self-verify / user corrections — obey these):");
+      for (const L of mem.lessons.slice(-10)) lines.push(`- ${L}`);
     }
     lines.push(
       "Capability note: the facts above are context about Blake — they do NOT limit you to vehicle-only answers. You still handle weather, news, stocks, web search, webpage review, and general chat. Never claim you cannot view websites when a fetch tool/result is available."
@@ -286,6 +362,9 @@ function createDurableMemory(getUserDataPath) {
     save,
     learnFromUserMessage,
     learnFromAssistantTurn,
+    addLesson,
+    getLessons,
+    appendLessonToMarkdown,
     buildSystemSuffix,
     ensureSeedProfile,
     reset,

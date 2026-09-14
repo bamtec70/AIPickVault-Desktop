@@ -1,5 +1,7 @@
 ﻿"use strict";
 
+const { isPlatformEligibilityAsk } = require("./domain/platformEligibility");
+
 /**
  * Deterministic intent router for AIPickVault Desktop.
  *
@@ -509,12 +511,20 @@ function needsFactualRefresh(message) {
     return true;
   }
 
+  // Platform vehicle age / eligibility / requirements — always live tools
+  try {
+    if (isPlatformEligibilityAsk(lower)) return true;
+  } catch (_) {}
+
   return false;
 }
 
 function isSearchIntent(text, lower) {
   // Factual refresh beats chitchat heuristics (recall / price / challenge follow-ups).
   if (needsFactualRefresh(text)) return true;
+  try {
+    if (isPlatformEligibilityAsk(text)) return true;
+  } catch (_) {}
   if (isChatish(lower)) return false;
 
   if (/^(search|look\s*up|lookup|find|google)\b/i.test(text)) return true;

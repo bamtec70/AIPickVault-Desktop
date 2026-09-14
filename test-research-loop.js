@@ -573,4 +573,102 @@ async function __fetchPageTest() {
 }
 
 
+
+// --- Platform eligibility hard gate (Lyft/Uber age) — NOT pack-only ---
+{
+  const {
+    isPlatformEligibilityAsk,
+    ensureGigVehicleDomainRoute,
+    shouldUseKnowledgeFirst
+  } = require("./domain/gigVehicle");
+  const { evaluateSelfVerify, collectToolTextBlob } = require("./researchLoop");
+
+  const lyftQ = "What are the Lyft vehicle AGE rules for rides in Texas? How old can the car be?";
+  assert.strictEqual(isPlatformEligibilityAsk(lyftQ), true, "Lyft age ask must detect eligibility");
+  const raw = routeMessage(lyftQ);
+  assert.strictEqual(raw.intent, "search", "Lyft age must route search, got " + JSON.stringify(raw));
+  assert.ok(raw.payload.forceToolRefresh, "Lyft age must forceToolRefresh");
+  const forced = ensureGigVehicleDomainRoute(lyftQ, raw, {});
+  assert.ok(forced.payload.forceToolRefresh, "ensure must keep forceToolRefresh");
+  assert.ok(!forced.payload.domainPackPreferred, "must not prefer pack-only for Lyft age");
+  assert.strictEqual(shouldUseKnowledgeFirst(lyftQ, forced), false);
+  const plan = planTools(forced, lyftQ);
+  assert.ok(plan.some((s) => s.tool === "search"), "Lyft age plan must include search, got: " + describePlan(plan));
+  assert.ok(!plan.every((s) => s.tool === "domain"), "Lyft age must not be pack-only");
+  const joined = plan.filter((s) => s.tool === "search").map((s) => s.args.query).join(" | ");
+  assert.match(joined, /Lyft/i, "search queries should mention Lyft: " + joined);
+  assert.match(joined, /help\.lyft\.com|vehicle|model year|requirements/i, "should prefer official/requirements query: " + joined);
+
+  const uberQ = "Uber Dallas Fort Worth vehicle requirements years — what's the age limit?";
+  assert.strictEqual(isPlatformEligibilityAsk(uberQ), true);
+  const uPlan = planTools(ensureGigVehicleDomainRoute(uberQ, routeMessage(uberQ), {}), uberQ);
+  assert.ok(uPlan.some((s) => s.tool === "search"), "Uber age must search");
+  assert.ok(!uPlan.every((s) => s.tool === "domain"));
+}
+
+// --- Self-verify: year claim without tool text → RETRY needed ---
+{
+  const { evaluateSelfVerify } = require("./researchLoop");
+  const draft =
+    "Per Lyft official policy, vehicles must be manufactured after 2010 (2011+). A 2010 Corolla is a 2011 model year. Uber requires 2012+ in DFW. Verified via Lyft official site https://help.lyft.com/fake.";
+  const emptyBag = { web: [], news: null, page: null };
+  const v1 = evaluateSelfVerify(draft, emptyBag);
+  assert.strictEqual(v1.needed, true, "unsupported policy claims must need retry");
+  assert.ok(v1.status === "RETRY" || !v1.ok);
+
+  const supportedBag = {
+    web: [
+      {
+        title: "Texas Driver Information - Lyft Help",
+        link: "https://help.lyft.com/hc/en-us/articles/115013083628-Texas-Driver-Information",
+        snippet: "Vehicles must be model year 2010 or newer. Requirements may vary by region."
+      }
+    ]
+  };
+  const goodDraft =
+    "According to Lyft's Texas help page, the baseline is model year 2010 or newer; regions may differ. Cite: https://help.lyft.com/hc/en-us/articles/115013083628-Texas-Driver-Information";
+  const v2 = evaluateSelfVerify(goodDraft, supportedBag);
+  assert.strictEqual(v2.needed, false, "tool-backed 2010 claim should PASS, got " + JSON.stringify(v2));
+  assert.strictEqual(v2.status, "PASS");
+}
+
+// --- Lesson memory written on correction / addLesson ---
+{
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const { createDurableMemory } = require("./durableMemory");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aipick-lesson-"));
+  const mem = createDurableMemory(() => tmp);
+  const learned = mem.learnFromUserMessage(
+    "That's wrong — that's not what Lyft says. You invented the year cutoff."
+  );
+  assert.ok(
+    learned.learned.includes("correction") || learned.learned.includes("lesson:platform-eligibility"),
+    "user correction must be learned: " + JSON.stringify(learned)
+  );
+  const snap = mem.getSnapshot();
+  assert.ok(Array.isArray(snap.lessons) && snap.lessons.length >= 1, "lessons array must gain an entry");
+  const added = mem.addLesson(
+    "Lyft/Uber vehicle age requires live official fetch; never invent year cutoffs.",
+    "test"
+  );
+  assert.ok(added.added || snap.lessons.length >= 1);
+  const suffix = mem.buildSystemSuffix();
+  assert.match(suffix, /Durable lessons|never invent year cutoffs|platform vehicle age/i);
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// Pack still OK for TCO (not eligibility)
+{
+  const { shouldUseKnowledgeFirst, isPlatformEligibilityAsk } = require("./domain/gigVehicle");
+  const tco = "Best car for DoorDash under $10000 looking at annual cost reliability";
+  assert.strictEqual(isPlatformEligibilityAsk(tco), false);
+  assert.strictEqual(
+    shouldUseKnowledgeFirst(tco, { intent: "search", payload: { wantsRecommendation: true } }),
+    true
+  );
+}
+
+
 console.log("All research-loop tests passed.");

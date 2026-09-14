@@ -195,4 +195,21 @@ expectIntent("Check out my website www.example.org", "fetch", (r) => {
 
 }
 
+
+// Platform eligibility → search + forceToolRefresh (not pack-only chat)
+{
+  const { isPlatformEligibilityAsk, ensureGigVehicleDomainRoute, shouldUseKnowledgeFirst } = require("./domain/gigVehicle");
+  const { planTools } = require("./researchLoop");
+  const q = "Lyft vehicle age requirements Texas — how old can the car be?";
+  assert.strictEqual(isPlatformEligibilityAsk(q), true);
+  const r = routeMessage(q);
+  assert.strictEqual(r.intent, "search");
+  assert.ok(r.payload.forceToolRefresh);
+  const forced = ensureGigVehicleDomainRoute(q, r, {});
+  assert.ok(!shouldUseKnowledgeFirst(q, forced));
+  const plan = planTools(forced, q);
+  assert.ok(plan.some((s) => s.tool === "search"));
+  assert.ok(!plan.every((s) => s.tool === "domain"));
+}
+
 console.log("All router tests passed.");

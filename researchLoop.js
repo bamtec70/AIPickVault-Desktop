@@ -8,9 +8,14 @@ const {
   isPackBackedLocateAsk,
   isYearRecallAsk,
   isGigVehicleDomainAsk,
+  isPlatformEligibilityAsk,
+  platformEligibilitySearchQueries,
   VEHICLE_LISTING_MODELS,
   VEHICLE_MAKES
 } = require("./domain/gigVehicle");
+const {
+  OFFICIAL_POLICY_HOSTS
+} = require("./domain/platformEligibility");
 const { needsFactualRefresh } = require("./router");
 const { listingSearchQueryFromUrl, isListingSiteUrl } = require("./tools");
 
@@ -65,6 +70,7 @@ function extractBudget(message) {
 function extractGigUseCase(message) {
   const lower = String(message || "").toLowerCase();
   const platforms = [];
+  if (/\blyft\b/.test(lower)) platforms.push("Lyft");
   if (/\bdoordash\b|\bdoor\s*dash\b/.test(lower)) platforms.push("DoorDash");
   if (/\buber\s*eats\b/.test(lower)) platforms.push("Uber Eats");
   else if (/\buber\b/.test(lower)) platforms.push("Uber");
@@ -332,6 +338,11 @@ function rewriteSearchQuery(message, opts) {
     for (const q of buildVehicleListingQueries(spec)) queries.push(q);
   }
 
+  // Platform eligibility / vehicle age — official help searches (never pack-only)
+  if (isPlatformEligibilityAsk(raw) || isPlatformEligibilityAsk(text) || (opts && opts.platformEligibility)) {
+    for (const q of platformEligibilitySearchQueries(raw || text)) queries.push(q);
+  }
+
   // Recall / NHTSA / battery follow-ups — tight factual queries first
   if (/\b(recall|nhtsa)\b/i.test(text) || (/\bbattery\b/i.test(text) && /\b(prius|toyota|hybrid|generation)\b/i.test(text))) {
     const modelBit = (text.match(/\b(prius|corolla|civic|camry|accord|rav4|sienna)\b/i) || [])[0] || "used car";
@@ -420,6 +431,9 @@ function scoreWebResultForSynth(result) {
   let score = 0;
   for (const host of PREFERRED_RESEARCH_HOSTS) {
     if (link.includes(host)) { score += 8; break; }
+  }
+  for (const host of OFFICIAL_POLICY_HOSTS) {
+    if (link.includes(host)) { score += 12; break; }
   }
   if (/reddit\.com\/r\/(doordash|uber|couriers|gigworkers|cars|whatcarshouldibuy)/i.test(link)) score += 4;
   for (const bad of DEMOTED_RESEARCH_HOSTS) {
@@ -511,7 +525,13 @@ function planTools(route, message) {
     const knowledgeFirst = shouldUseKnowledgeFirst(text, route) || shouldUseKnowledgeFirst(rawQuery, route);
     // Knowledge-first: general gig/vehicle advice uses local domain pack — no multi-search blast.
     // Verification (recall/NHTSA/price/listing/insurance) still forces tools below.
-    if (knowledgeFirst && !forceRefresh) {
+    const eligibilityAsk =
+      isPlatformEligibilityAsk(text) ||
+      isPlatformEligibilityAsk(rawQuery) ||
+      !!payload.platformEligibility;
+    const forceRefreshEffective = forceRefresh || eligibilityAsk;
+    // Hard gate: platform age/eligibility CANNOT complete pack-only
+    if (knowledgeFirst && !forceRefreshEffective && !eligibilityAsk) {
       return [{
         id: "domain",
         tool: "domain",
@@ -519,6 +539,20 @@ function planTools(route, message) {
         args: {},
         knowledgeFirst: true
       }];
+    }
+    if (eligibilityAsk) {
+      const eq = platformEligibilitySearchQueries(rawQuery || text);
+      for (let qi = 0; qi < Math.min(eq.length, 2) && steps.length < MAX_STEPS; qi++) {
+        steps.push({
+          id: qi === 0 ? "search" : "search" + (qi + 1),
+          tool: "search",
+          label: qi === 0 ? "Web search (platform policy)" : "Web search (platform policy " + (qi + 1) + ")",
+          args: { query: eq[qi] },
+          mergeWeb: qi > 0,
+          queryMeta: { original: rawQuery, rewritten: eq[qi], wasRewritten: true, platformEligibility: true }
+        });
+      }
+      // Prefer fetching top official URL later via search results; keep plan search-first
     }
     // Pack-backed locate (recommended Corolla/Prius / gig): pack + listing search.
     // Generic Civic/F-150 listing locate skips pack — search tools only.
@@ -540,11 +574,16 @@ function planTools(route, message) {
 
     if (toolsHint.includes("search") || toolsHint.length === 0 || locateListing) {
       const primary = queryList[0] || rawQuery;
-      steps.push({
-        id: "search", tool: "search", label: "Web search",
-        args: { query: primary },
-        queryMeta: { original: rawQuery, rewritten: primary, wasRewritten: rewritten.rewritten }
-      });
+      const already = steps.some((s) => s.tool === "search" && String(s.args && s.args.query || "").toLowerCase() === String(primary).toLowerCase());
+      if (!already) {
+        steps.push({
+          id: steps.some((s) => s.tool === "search") ? "search_extra" : "search",
+          tool: "search", label: "Web search",
+          args: { query: primary },
+          mergeWeb: steps.some((s) => s.tool === "search"),
+          queryMeta: { original: rawQuery, rewritten: primary, wasRewritten: rewritten.rewritten }
+        });
+      }
     }
 
     if ((wantsRec || locateListing) && steps.some((s) => s.tool === "search")) {
@@ -594,6 +633,22 @@ function planTools(route, message) {
         tool: "search", label: "Web search (refined)",
         args: { query: fallbackQ }, mergeWeb: true
       });
+    }
+
+    // Dedupe search queries (eligibility + rewrite often overlap)
+    {
+      const seenQ = new Set();
+      const deduped = [];
+      for (const st of steps) {
+        if (st.tool === "search") {
+          const key = String(st.args && st.args.query || "").toLowerCase();
+          if (seenQ.has(key)) continue;
+          seenQ.add(key);
+        }
+        deduped.push(st);
+      }
+      steps.length = 0;
+      steps.push(...deduped);
     }
 
     if ((toolsHint.includes("stock") || payload.optionalSymbol) && steps.length < MAX_STEPS) {
@@ -758,6 +813,115 @@ function mergeStepResult(bag, step, outcome) {
   }
 }
 
+
+function collectToolTextBlob(bag) {
+  const parts = [];
+  if (!bag) return "";
+  if (Array.isArray(bag.web)) {
+    for (const r of bag.web) {
+      parts.push(r.title || "", r.snippet || "", r.link || r.url || "");
+    }
+  }
+  if (Array.isArray(bag.news)) {
+    for (const r of bag.news) {
+      parts.push(r.title || "", r.snippet || "", r.link || r.url || "");
+    }
+  }
+  if (bag.page) {
+    parts.push(bag.page.title || "", bag.page.url || "", bag.page.finalUrl || "");
+    if (bag.page.text) parts.push(String(bag.page.text).slice(0, 8000));
+  }
+  return parts.join("\n").toLowerCase();
+}
+
+/**
+ * Cheap local check: platform year cutoffs / official policy / insurance % claims
+ * must be supported by tool text. Returns { ok, reason, needed }.
+ */
+function evaluateSelfVerify(draftText, bag) {
+  const draft = String(draftText || "");
+  const toolBlob = collectToolTextBlob(bag);
+  const hasTools = toolBlob.replace(/\s+/g, "").length > 40;
+
+  const platformPolicyClaim =
+    /\b(lyft|uber(?:\s*eats)?|doordash)[\s\S]{0,120}\b(require|requires|required|allow|allows|eligible|eligibility|accept|accepts|vehicle\s+age|model\s+year|or\s+newer|or\s+older|manufactured)\b/i.test(draft) ||
+    /\b(official\s+(?:lyft|uber|doordash)\s+(?:policy|site|help)|verified\s+via\s+(?:lyft|uber|doordash|official)|per\s+(?:lyft|uber|doordash)\s+(?:policy|help|rules?))\b/i.test(draft) ||
+    /\b\d{1,2}-year-old\s+vehicle\b/i.test(draft) ||
+    /\b(20\d{2}|19\d{2})\s*\+\b/.test(draft) && /\b(lyft|uber|doordash|vehicle|rideshare)\b/i.test(draft);
+
+  const insuranceRateClaim =
+    /\binsurance\b[\s\S]{0,50}\b\d{1,3}\s*%/.test(draft) ||
+    /\b\d{1,3}\s*%[\s\S]{0,40}\binsurance\b/i.test(draft);
+
+  if (!platformPolicyClaim && !insuranceRateClaim) {
+    return { ok: true, needed: false, reason: "no_policy_claims", status: "PASS" };
+  }
+
+  if (!hasTools) {
+    return { ok: false, needed: true, reason: "policy_claim_without_tools", status: "RETRY" };
+  }
+
+  if (platformPolicyClaim) {
+    const years = [];
+    const reY = /\b(19\d{2}|20\d{2})\b/g;
+    let m;
+    while ((m = reY.exec(draft)) !== null) years.push(m[1]);
+    const ageWin = draft.match(/\b(\d{1,2})-year-old\b/i);
+    const toolHasPolicy =
+      /lyft|uber|doordash|help\.lyft|help\.uber|vehicle requirements|model year|or newer|year-old vehicle|driver information/i.test(toolBlob);
+    let supported = false;
+    if (toolHasPolicy) {
+      if (years.some((y) => toolBlob.includes(y))) supported = true;
+      if (ageWin && (toolBlob.includes(ageWin[1] + "-year") || toolBlob.includes(ageWin[1] + " year") || toolBlob.includes(ageWin[1] + "-year-old"))) {
+        supported = true;
+      }
+      // Rolling window phrasing
+      if (/\d{1,2}-year-old|or newer|model year/i.test(toolBlob) && /lyft|uber|vehicle/i.test(draft)) {
+        if (years.some((y) => toolBlob.includes(y)) || ageWin) supported = supported || /\d{1,2}-year-old|or newer/i.test(toolBlob);
+      }
+    }
+    if (!supported) {
+      return { ok: false, needed: true, reason: "unsupported_platform_year_claim", status: "RETRY" };
+    }
+  }
+
+  if (insuranceRateClaim) {
+    const pct = draft.match(/insurance[\s\S]{0,50}(\d{1,3})\s*%/i) || draft.match(/(\d{1,3})\s*%[\s\S]{0,40}insurance/i);
+    if (pct) {
+      const n = pct[1];
+      if (!toolBlob.includes(n + "%") && !toolBlob.includes(n + " percent") && !toolBlob.includes(n + " per cent")) {
+        return { ok: false, needed: true, reason: "unsupported_insurance_rate", status: "RETRY" };
+      }
+    }
+  }
+
+  return { ok: true, needed: false, reason: "claims_supported", status: "PASS" };
+}
+
+function enforcePlatformEligibilityPlan(steps, message, route) {
+  const text = String(message || "");
+  const payload = (route && route.payload) || {};
+  if (!isPlatformEligibilityAsk(text) && !payload.platformEligibility) return steps || [];
+  const list = Array.isArray(steps) ? steps.slice() : [];
+  const hasLive = list.some((s) => s.tool === "search" || s.tool === "fetch");
+  const onlyDomain = list.length > 0 && list.every((s) => s.tool === "domain");
+  if (hasLive && !onlyDomain) return list;
+  const out = list.filter((s) => s.tool !== "domain");
+  const eq = platformEligibilitySearchQueries(text);
+  for (let qi = 0; qi < eq.length && out.length < MAX_STEPS; qi++) {
+    out.push({
+      id: qi === 0 ? "search" : "search_elig_" + (qi + 1),
+      tool: "search",
+      label: "Web search (platform policy gate)",
+      args: { query: eq[qi] },
+      mergeWeb: out.some((s) => s.tool === "search"),
+      queryMeta: { original: text, rewritten: eq[qi], wasRewritten: true, platformEligibility: true }
+    });
+  }
+  return out.length ? out : list;
+}
+
+
 function buildWeatherSynthesisPrompt(message, bag) {
   const parts = [];
   parts.push(`You are AIPickVault Desktop — a general local research assistant. Summarize the weather clearly for Blake.`);
@@ -767,6 +931,11 @@ function buildWeatherSynthesisPrompt(message, bag) {
   parts.push(`- Use ONLY the weather data below; do not invent numbers.`);
   parts.push(`- Do NOT claim you are a vehicle-only assistant. Do not mention cars, gig delivery, or domain packs.`);
   parts.push(`- No raw JSON. Short structured sections.`);
+  if (Array.isArray(bag.lessons) && bag.lessons.length) {
+    parts.push(``);
+    parts.push(`Durable lessons (obey):`);
+    for (const L of bag.lessons.slice(-10)) parts.push(`- ${L}`);
+  }
   parts.push(``);
   parts.push(`User question:`);
   parts.push(message);
@@ -808,6 +977,11 @@ function buildFetchSynthesisPrompt(message, bag) {
   parts.push(`- Do NOT claim you are limited to vehicle recommendations. No "Fort Worth Local Advisor" branding.`);
   parts.push(`- Do not invent quotes or sections that are not in the extracted text.`);
   parts.push(`- No raw JSON. Short structured sections.`);
+  if (Array.isArray(bag.lessons) && bag.lessons.length) {
+    parts.push(``);
+    parts.push(`Durable lessons (obey):`);
+    for (const L of bag.lessons.slice(-10)) parts.push(`- ${L}`);
+  }
   parts.push(``);
   parts.push(`User question:`);
   parts.push(message);
@@ -920,6 +1094,16 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
   if (packOnly) {
     parts.push(`- PACK-ONLY turn: no live web/news tool results were used. In "Sourced vs estimate", say pack heuristic / estimate (local gig-vehicle specialist pack) ONLY. Do NOT invent TDI, DFW market scrapes, dealer quotes, Autotrader/Cars.com "sources", listing prices, fake citations, SOH %, failure probabilities, reliability index scores, or NHTSA campaign details. Point to Autotrader/Cars.com filters for Fort Worth / Alliance (76177) without claiming you pulled live inventory.`);
   }
+  if (isPlatformEligibilityAsk(message)) {
+    parts.push(`- PLATFORM POLICY MODE (mandatory): Only state year cutoffs / age windows that appear in the tool text below. Policies are city-specific and change.`);
+    parts.push(`- Never invent help URLs. Only cite exact links from tool results. Prefer official Texas/Dallas/DFW pages when present.`);
+    parts.push(`- Never equate model year with manufacture year incorrectly (e.g. do NOT claim "2010 Corolla = 2011 model year").`);
+    parts.push(`- If tools conflict or a page says regions differ, say so explicitly and link the official pages from results.`);
+    parts.push(`- If tool text is missing a cutoff, say you could not verify from live sources — do NOT guess from the gig pack.`);
+    parts.push(`- When advising rideshare + food apps together: recommend checking both platforms; prefer model years that satisfy the stricter tool-sourced cutoff.`);
+  } else if (gig.isGig || /\b(lyft|uber|doordash)\b/i.test(message)) {
+    parts.push(`- Do NOT claim Lyft/Uber/DoorDash vehicle eligibility or year cutoffs unless those exact figures appear in tool text. Pack may still recommend Corolla for TCO.`);
+  }
   parts.push(`- Do not invent NHTSA recall campaign IDs unless present in tool text; if unsure, say so and rely on what the sources show.`);
   parts.push(`- ANTI-FAKE-STATS: Never invent SOH percentages or hard SOH cutoffs (e.g. SOH < 80% reject), failure probabilities, "X% of cars", reliability index scores (e.g. 3.2/5.0), insurance %, "guaranteed" claims, exact gallon/$ fuel-penalty figures, or precise chance-of-failure numbers unless those exact figures appear in the tool result text below. Prefer qualitative: "battery health varies; require PPI / SOH report; if battery unknown/weak → Corolla; fuel savings can be meaningful but battery risk can erase them at high annual miles."`);
   parts.push(`- Do not over-claim NHTSA sourcing. If campaign details are not in tool snippets, say you do not have the campaign text — do not fabricate IDs or rates.`);
@@ -990,6 +1174,11 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
     parts.push(`Listing-search mode: answer about the vehicle the user named. Quote only concrete listing facts from tool text. Do not invent inventory or pivot to Corolla/gig-pack defaults.`);
   }
 
+  if (Array.isArray(bag.lessons) && bag.lessons.length) {
+    parts.push(``);
+    parts.push(`Durable lessons (obey):`);
+    for (const L of bag.lessons.slice(-10)) parts.push(`- ${L}`);
+  }
   parts.push(``);
   parts.push(`User question:`);
   parts.push(message);
@@ -1059,7 +1248,13 @@ async function runResearchLoop(opts) {
   const stream = opts.stream || { note() {}, chunk() {} };
   const askOllama = opts.askOllama;
   const toolFns = opts.tools;
-  const steps = planTools(route, message);
+  let steps = enforcePlatformEligibilityPlan(planTools(route, message), message, route);
+  if (
+    (isPlatformEligibilityAsk(message) || (route.payload && route.payload.platformEligibility)) &&
+    steps.every((s) => s.tool === "domain")
+  ) {
+    steps = enforcePlatformEligibilityPlan([], message, route);
+  }
   const wantsRecommendation = !!(route.payload && route.payload.wantsRecommendation);
   const skipSynthesize = !!opts.skipSynthesize;
 
@@ -1279,19 +1474,146 @@ async function runResearchLoop(opts) {
     return { text, model, plan: steps, bag };
   }
 
-  const packOnlySynth = hasDomain && citations === 0 && !hasStock && !hasWeather && !hasPage;
+  const eligibilityAsk =
+    isPlatformEligibilityAsk(message) || !!(route.payload && route.payload.platformEligibility);
+
+  // Hard gate at synth time: eligibility must not pack-only complete
+  if (eligibilityAsk && citations === 0 && !hasPage) {
+    stream.note("SELF_VERIFY RETRY: platform eligibility blocked pack-only — fetching official policy…");
+    if (typeof opts.onSelfVerify === "function") opts.onSelfVerify("RETRY", "pack_only_blocked");
+    if (typeof opts.onLesson === "function") {
+      opts.onLesson(
+        "Lyft/Uber/DoorDash vehicle age requires live official fetch; never invent year cutoffs from the gig pack.",
+        "pack-only-blocked"
+      );
+    }
+    const eq = platformEligibilitySearchQueries(message);
+    for (const q of eq.slice(0, Math.max(1, MAX_STEPS - steps.length))) {
+      const step = {
+        id: "search_elig_gate",
+        tool: "search",
+        label: "Web search (platform policy gate)",
+        args: { query: q },
+        mergeWeb: true
+      };
+      steps.push(step);
+      stream.note(`Mandatory policy search: "${q}"`);
+      const outcome = await executeStep(step, toolFns);
+      mergeStepResult(bag, step, outcome);
+    }
+    if (Array.isArray(bag.web) && bag.web.length) bag.web = rankWebResultsForSynth(bag.web);
+  }
+
+  const citations2 = countCitations(bag);
+  const hasPage2 = !!(bag.page && !bag.page.error && bag.page.text);
+  const packOnlySynth = hasDomain && citations2 === 0 && !hasStock && !hasWeather && !hasPage2;
+
+  if (eligibilityAsk && packOnlySynth) {
+    stream.note("SELF_VERIFY FAIL: could not retrieve platform policy sources");
+    if (typeof opts.onSelfVerify === "function") opts.onSelfVerify("FAIL", "no_policy_sources");
+    if (typeof opts.onLesson === "function") {
+      opts.onLesson(
+        "Platform eligibility ask failed without live sources — refuse invented year cutoffs; tell user to check official help pages.",
+        "self-verify-fail"
+      );
+    }
+    const failText =
+      "I couldn't verify platform vehicle age/eligibility from live official sources just now. " +
+      "I won't invent year cutoffs from the local pack. Please retry, or open the official help pages " +
+      "(e.g. Lyft Texas driver info / Uber local vehicle requirements) and paste the age line if you want me to interpret it.";
+    return { text: failText, model, plan: steps, bag, selfVerify: "FAIL" };
+  }
+
+  if (Array.isArray(opts.lessons) && opts.lessons.length) {
+    bag.lessons = opts.lessons;
+  }
+
   if (packOnlySynth) {
     stream.note("Using gig-vehicle specialist knowledge…");
-  } else if (route.intent === "weather" || (hasWeather && citations === 0 && !hasStock && !hasPage && !hasDomain)) {
+  } else if (route.intent === "weather" || (hasWeather && citations2 === 0 && !hasStock && !hasPage2 && !hasDomain)) {
     stream.note("Summarizing weather…");
-  } else if (route.intent === "fetch" || hasPage) {
+  } else if (route.intent === "fetch" || hasPage2) {
     stream.note("Reviewing page content…");
   } else {
-    stream.note(`Synthesizing from ${citations || "tool"} source${citations === 1 ? "" : "s"}…`);
+    stream.note(`Synthesizing from ${citations2 || "tool"} source${citations2 === 1 ? "" : "s"}…`);
   }
-  const prompt = buildSynthesisPrompt(message, route.intent, bag, wantsRecommendation);
-  const text = await askOllama(prompt, model, stream.chunk, askOpts);
-  return { text, model, plan: steps, bag };
+
+  let prompt = buildSynthesisPrompt(message, route.intent, bag, wantsRecommendation);
+  let text = await askOllama(prompt, model, stream.chunk, askOpts);
+
+  // Post-draft self-critique (one retry max)
+  let verify = evaluateSelfVerify(text, bag);
+  if (verify.needed && !opts.skipSelfVerify) {
+    stream.note("SELF_VERIFY RETRY: " + verify.reason);
+    if (typeof opts.onSelfVerify === "function") opts.onSelfVerify("RETRY", verify.reason);
+    const eq = platformEligibilitySearchQueries(message);
+    const retryQ = eq[0] || ("vehicle requirements model year " + message).slice(0, 100);
+    const retryStep = {
+      id: "search_self_verify",
+      tool: "search",
+      label: "Web search (self-verify)",
+      args: { query: retryQ },
+      mergeWeb: true
+    };
+    steps.push(retryStep);
+    stream.note(`Self-verify search: "${retryQ}"`);
+    const outcome = await executeStep(retryStep, toolFns);
+    mergeStepResult(bag, retryStep, outcome);
+    if (Array.isArray(bag.web) && bag.web.length) bag.web = rankWebResultsForSynth(bag.web);
+
+    // Prefer fetch of an official help URL from results when present
+    const official = (bag.web || []).find((r) => {
+      const u = String((r && (r.link || r.url)) || "").toLowerCase();
+      return OFFICIAL_POLICY_HOSTS.some((h) => u.includes(h));
+    });
+    if (official && toolFns && typeof toolFns.fetchWebpage === "function" && steps.length < MAX_STEPS + 2) {
+      const url = official.link || official.url;
+      const fetchStep = {
+        id: "fetch_self_verify",
+        tool: "fetch",
+        label: "Fetch official policy page",
+        args: { url }
+      };
+      steps.push(fetchStep);
+      stream.note(`Self-verify fetch: ${url}`);
+      const fout = await executeStep(fetchStep, toolFns);
+      mergeStepResult(bag, fetchStep, fout);
+    }
+
+    prompt = buildSynthesisPrompt(message, route.intent, bag, wantsRecommendation);
+    // Re-synthesize once (fresh stream chunks append)
+    stream.note("Re-synthesizing after self-verify…");
+    text = await askOllama(prompt, model, stream.chunk, askOpts);
+    verify = evaluateSelfVerify(text, bag);
+    if (verify.ok) {
+      stream.note("SELF_VERIFY PASS");
+      if (typeof opts.onSelfVerify === "function") opts.onSelfVerify("PASS", verify.reason);
+    } else {
+      stream.note("SELF_VERIFY FAIL: " + verify.reason);
+      if (typeof opts.onSelfVerify === "function") opts.onSelfVerify("FAIL", verify.reason);
+      if (typeof opts.onLesson === "function") {
+        opts.onLesson(
+          "Lyft/Uber vehicle age requires live official fetch; never invent year cutoffs. Self-verify failed: " + verify.reason,
+          "self-verify-fail"
+        );
+      }
+      // Soften: append honesty note rather than shipping unsupported cutoffs silently
+      if (!/could not verify|couldn't verify|unable to verify/i.test(text)) {
+        text =
+          text +
+          "\n\nNote: I could not fully verify platform year cutoffs against live official tool text — treat any specific year rules above as unverified and check the official help page for your city.";
+      }
+    }
+  } else if (verify.status === "PASS" && (platformPolicyClaimSafe(text) || eligibilityAsk)) {
+    stream.note("SELF_VERIFY PASS");
+    if (typeof opts.onSelfVerify === "function") opts.onSelfVerify("PASS", verify.reason);
+  }
+
+  return { text, model, plan: steps, bag, selfVerify: verify.status };
+}
+
+function platformPolicyClaimSafe(draft) {
+  return /\b(lyft|uber|doordash)[\s\S]{0,80}\b(require|or newer|vehicle age|model year)\b/i.test(String(draft || ""));
 }
 
 module.exports = {
@@ -1300,5 +1622,7 @@ module.exports = {
   buildSynthesisPrompt, buildWeatherSynthesisPrompt, buildFetchSynthesisPrompt, extractBudget, extractGigUseCase, extractCriteria,
   hasCostReliabilityLanguage, rankWebResultsForSynth, scoreWebResultForSynth, MAX_STEPS,
   shouldUseKnowledgeFirst, isLocateRecommendedVehicleAsk, isPackBackedLocateAsk, isYearRecallAsk,
-  extractVehicleListingSpec, buildVehicleListingQueries
+  extractVehicleListingSpec, buildVehicleListingQueries,
+  isPlatformEligibilityAsk, platformEligibilitySearchQueries,
+  evaluateSelfVerify, enforcePlatformEligibilityPlan, collectToolTextBlob
 };

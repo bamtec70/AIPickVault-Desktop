@@ -9,6 +9,11 @@ const fs = require("fs");
 const path = require("path");
 
 const MD_PATH = path.join(__dirname, "gig-vehicle.md");
+const {
+  isPlatformEligibilityAsk,
+  platformEligibilitySearchQueries,
+  detectPlatformsInMessage
+} = require("./platformEligibility");
 
 let cached = null;
 let cachedMtime = null;
@@ -41,6 +46,7 @@ const FALLBACK_PACK = [
   "Soften precision: no hard SOH < 80% reject; no 10-15% insurance; no guaranteed; no exact gallon arithmetic unless from tools. Require PPI/SOH report; if battery unknown/weak → Corolla; fuel savings can be meaningful but battery risk can erase them at high annual miles.",
   "Never invent listings/prices/URLs/example asks (e.g. $8,995); never claim I've tested this / 100% of listings / 100% safe; pack-only answers are pack heuristic/estimate; no double-counted cost buckets.",
   "Year-recall → answer 2010-2015 Corolla LE/SE from pack. Locate recommended Corolla/Prius → restated pack pick + listing filters near 76177; never pretend no recommendation exists.",
+  "Platform age/eligibility (Lyft/Uber/DoorDash/etc.) = VERIFY WITH LIVE TOOLS — never invent year cutoffs from this pack.",
   "ANTI-FAKE-STATS: never invent SOH %, hard SOH cutoffs, failure probabilities, 'X% of cars', reliability index scores, insurance %, exact fuel-penalty figures, or NHTSA campaign details unless present in tool text. Prefer qualitative: battery health varies; require PPI / SOH report. Illustrative ranges OK only if clearly labeled estimate."
 ].join("\n");
 
@@ -179,6 +185,12 @@ function isGigVehicleAdviceText(message) {
   const lower = text.toLowerCase();
   if (!lower.trim()) return false;
 
+  // Eligibility/age rules are not TCO advice — tools only (unless also asking for a car pick)
+  if (isPlatformEligibilityAsk(text)) {
+    const wantsPick = /\b(best|recommend|should i buy|which (?:car|vehicle)|under \$?\d|tco|annual cost|prius|corolla)\b/i.test(lower);
+    if (!wantsPick) return false;
+  }
+
   if (isYearRecallAsk(text)) return true;
   if (isPackBackedLocateAsk(text)) return true;
 
@@ -216,7 +228,9 @@ function isGigVehicleDomainAsk(message, route, opts) {
   const text = String(message || "");
   const lower = text.toLowerCase();
   const payload = (route && route.payload) || {};
-  if (payload.forceToolRefresh && !isYearRecallAsk(text) && !isLocateRecommendedVehicleAsk(text)) return false;
+  // Pure platform eligibility/age asks are tool-backed — not pack domain advice
+  if (isPlatformEligibilityAsk(text) && !isGigVehicleAdviceText(text)) return false;
+  if (payload.forceToolRefresh && !isYearRecallAsk(text) && !isLocateRecommendedVehicleAsk(text) && !isPlatformEligibilityAsk(text)) return false;
   try {
     const { needsFactualRefresh } = require("../router");
     // Year-recall and pack restatements stay on domain path even if "listing" words appear later.
@@ -272,6 +286,8 @@ function isGigVehicleDomainAsk(message, route, opts) {
 function shouldUseKnowledgeFirst(message, route, opts) {
   if (!isGigVehicleDomainAsk(message, route, opts)) return false;
   const text = String(message || "").trim();
+  // Hard gate: platform vehicle age/eligibility never pack-only
+  if (isPlatformEligibilityAsk(text)) return false;
   if (isLocateRecommendedVehicleAsk(text)) return false;
   if (/^(search|look\s*up|lookup|find|google)\b/i.test(text) && !isYearRecallAsk(text)) return false;
   const payload = (route && route.payload) || {};
@@ -303,7 +319,7 @@ function ensureGigVehicleDomainRoute(message, route, opts) {
     return r;
   }
 
-  if (payload.forceToolRefresh && !isYearRecallAsk(text) && !isLocateRecommendedVehicleAsk(text)) {
+  if (payload.forceToolRefresh && !isYearRecallAsk(text) && !isLocateRecommendedVehicleAsk(text) && !isPlatformEligibilityAsk(text)) {
     return r;
   }
   try {
@@ -320,7 +336,9 @@ function ensureGigVehicleDomainRoute(message, route, opts) {
   const locate = isLocateRecommendedVehicleAsk(text);
   const packLocate = isPackBackedLocateAsk(text);
   const yearRecall = isYearRecallAsk(text);
-  const usePack = !locate || packLocate || yearRecall;
+  const eligibility = isPlatformEligibilityAsk(text);
+  // Pack for TCO/year-recall; never pack-preferred for platform eligibility/age
+  const usePack = (!locate || packLocate || yearRecall) && !eligibility;
 
   // Already on a tool path — keep intent; ensure recommendation / locate flags.
   if (r.intent === "search") {
@@ -331,12 +349,13 @@ function ensureGigVehicleDomainRoute(message, route, opts) {
         query: payload.query || text,
         tools: Array.isArray(payload.tools) && payload.tools.length ? payload.tools : ["search"],
         wantsRecommendation: usePack ? true : !!payload.wantsRecommendation,
-        domainPackPreferred: usePack && !locate,
+        domainPackPreferred: usePack && !locate && !eligibility,
         locateRecommendedVehicle: locate || undefined,
         packBackedLocate: packLocate || undefined,
         yearRecall: yearRecall || undefined,
-        // Locate needs live listing search; year-recall stays pack-first.
-        forceToolRefresh: locate ? true : payload.forceToolRefresh
+        platformEligibility: eligibility || undefined,
+        // Locate / eligibility need live tools; year-recall stays pack-first.
+        forceToolRefresh: locate || eligibility ? true : payload.forceToolRefresh
       }
     };
   }
@@ -348,11 +367,12 @@ function ensureGigVehicleDomainRoute(message, route, opts) {
         query: text,
         tools: ["search"],
         wantsRecommendation: usePack || locate ? true : !!payload.wantsRecommendation,
-        domainPackPreferred: usePack && !locate,
+        domainPackPreferred: usePack && !locate && !eligibility,
         locateRecommendedVehicle: locate || undefined,
         packBackedLocate: packLocate || undefined,
         yearRecall: yearRecall || undefined,
-        forceToolRefresh: locate ? true : undefined
+        platformEligibility: eligibility || undefined,
+        forceToolRefresh: locate || eligibility ? true : undefined
       }
     };
   }
@@ -368,12 +388,16 @@ function domainPackPromptSection() {
     "\nLOCKED years/trim: Corolla **2010–2015 LE/SE** (not XLE-only, not 2014–2015-only). Do not invent \"2010–2013 too risky\" without tool evidence." +
     "\n~40k mi/yr is annual use — NOT a hard under-40k listing odometer filter. Prefer lower miles; higher OK if price/condition/PPI justify." +
     "\nNever invent example asking prices/URLs, claim \"I've tested this\", \"100% of listings\", or \"100% safe\"." +
-    "\nYear-recall → answer 2010–2015 LE/SE from pack. Locate recommended vehicle → restate pack pick + offer listing filters near 76177; never pretend no recommendation exists."
+    "\nYear-recall → answer 2010–2015 LE/SE from pack. Locate recommended vehicle → restate pack pick + offer listing filters near 76177; never pretend no recommendation exists." +
+    "\nPlatform age/eligibility (Lyft/Uber/DoorDash/Uber Eats/etc.) = verify with live search/fetch of official help pages — NEVER invent year cutoffs, manufacture-vs-model-year equivalences, or help URLs from this pack. TCO Corolla advice is fine; eligibility claims require tool text."
   );
 }
 
 module.exports = {
   loadGigVehicleDomainPack,
+  isPlatformEligibilityAsk,
+  platformEligibilitySearchQueries,
+  detectPlatformsInMessage,
   isGigVehicleDomainAsk,
   isGigVehicleAdviceText,
   isYearRecallAsk,

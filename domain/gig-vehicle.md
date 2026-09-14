@@ -2,7 +2,9 @@
 
 **Purpose:** Local expertise so Desktop answers Blake's courier-vehicle questions like a specialist — from this pack + durable memory — not by scraping the web for every turn.
 
-**Use:** Knowledge-first for general advice. Tools only to **verify** live facts (NHTSA recalls, listings, prices, insurance quotes) or when this pack lacks coverage.
+**Use:** Knowledge-first for general **TCO / reliability** advice. Tools only to **verify** live facts (NHTSA recalls, listings, prices, insurance quotes) or when this pack lacks coverage.
+
+**Platform age/eligibility (mandatory):** Lyft, Uber, DoorDash, Uber Eats, etc. vehicle **rules / requirements / eligible / vehicle age / model year** must be answered with **live search/fetch** of official help pages — **never** from this pack alone. Do not invent year cutoffs, manufacture-vs-model-year equivalences, or help URLs. Pack may still recommend Corolla for TCO; eligibility claims require tool text. Policies are city-specific and change.
 
 **User anchors:** DoorDash, Uber, Uber Eats, Roadie, Amazon Flex, Shipt · Fort Worth / Alliance (76177) · maintains a cargo van · evaluating sub-$10k car for food/gig delivery · ranks annual cost, reliability, maintenance · be honest about uncertainty.
 
@@ -106,7 +108,7 @@ Use tools when he asks — or when recommending a buy he might act on:
 - **Live prices / listings** — do not invent Autotrader/Cars.com URLs or "verified at dealer $X in Alliance." Point him to filters for Fort Worth / Alliance / 76177 (years **2010–2015**, trims **LE/SE**). Prefer lower miles; do not invent a hard under-40k odometer cap.
 - **Insurance quote** on exact year/trim before purchase (never invent rate percentages).
 - **PPI** + Carfax/service records; **hybrid battery SOH test / report** for any Prius (required before Prius is #1). If battery health unknown/weak → Corolla. No hard invented SOH % cutoffs.
-- Platform vehicle rules (Uber categories, DoorDash bag, Flex/Roadie size).
+- Platform vehicle rules / age / eligibility (Uber, Lyft, DoorDash, etc.) — **always use search/fetch tools**; never invent year cutoffs from this pack.
 
 ## 9. Answer style for this subject
 

@@ -506,7 +506,9 @@ function makeStream(event) {
   return {
     note(text) {
       const t = String(text || "");
-      if (/synthesiz/i.test(t)) {
+      if (/SELF_VERIFY/i.test(t)) {
+        sessionLog.info("SELF_VERIFY", t.replace(/^SELF_VERIFY\s*/i, ""));
+      } else if (/synthesiz/i.test(t)) {
         sessionLog.synthesize(t);
       } else if (/^Step\s/i.test(t) || /unavailable|Found |parallel|Research plan/i.test(t)) {
         const fail = /unavailable/i.test(t);
@@ -542,6 +544,7 @@ function toolFns() {
 
 async function runRoutedResearch(message, model, route, stream) {
   const useThink = /^qwen3/i.test(String(model || ""));
+  const mem = getDurableMemory();
   const loopResult = await runResearchLoop({
     message,
     route,
@@ -549,7 +552,21 @@ async function runRoutedResearch(message, model, route, stream) {
     stream,
     askOllama,
     tools: toolFns(),
-    think: useThink
+    think: useThink,
+    lessons: typeof mem.getLessons === "function" ? mem.getLessons() : [],
+    onSelfVerify(status, reason) {
+      sessionLog.info("SELF_VERIFY", status + (reason ? " " + reason : ""));
+    },
+    onLesson(text, source) {
+      try {
+        if (typeof mem.addLesson === "function") {
+          const r = mem.addLesson(text, source || "self-verify");
+          if (r && r.added) sessionLog.info("LESSON", (source || "self-verify") + ": " + text);
+        }
+      } catch (err) {
+        console.error("lesson write error:", err);
+      }
+    }
   });
 
   const text = loopResult.text || "No response received.";
