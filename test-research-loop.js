@@ -16,7 +16,8 @@ const {
   extractBudget,
   extractGigUseCase,
   rankWebResultsForSynth,
-  MAX_STEPS
+  MAX_STEPS,
+  runResearchLoop
 } = require("./researchLoop");
 const { createDurableMemory } = require("./durableMemory");
 const fs = require("fs");
@@ -242,6 +243,12 @@ assert.strictEqual(
   assert.match(pack, /cargo van/i);
   assert.match(pack, /annual cost|Fuel|Insurance|Maintenance|Tires/i);
   assert.match(pack, /Never invent NHTSA|never invent/i);
+  assert.match(pack, /Endorsed heuristics|Blake endorsed|2026-09-14/i);
+  assert.match(pack, /Prius Gen 3|Gen 3.*2010|2010.?2015/i);
+  assert.match(pack, /Corolla 2010.?2015|safest default/i);
+  assert.match(pack, /25.?30k|25k.?30k/i);
+  assert.match(pack, /oil dilution/i);
+  assert.match(pack, /fuel penalty/i);
   assert.strictEqual(shouldUseKnowledgeFirst("best car for DoorDash under $10000", { intent: "search", payload: { wantsRecommendation: true } }), true);
   assert.strictEqual(needsFactualRefresh("what about Prius battery recall?"), true);
   assert.strictEqual(shouldUseKnowledgeFirst("what about Prius battery recall?", { intent: "search", payload: { forceToolRefresh: true } }), false);
@@ -288,4 +295,36 @@ assert.strictEqual(
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
-console.log("All research-loop tests passed.");
+// Pack-only synthesis: status note + Sourced vs estimate must not invent tool sources
+(async () => {
+  const notes = [];
+  const fakeAsk = async () => "ok";
+  const out = await runResearchLoop({
+    message: "What's the best car for DoorDash under $10000 looking at annual cost reliability maintenance?",
+    route: { intent: "search", payload: { wantsRecommendation: true, query: "best car DoorDash under 10000", tools: ["search"] } },
+    model: "test",
+    askOllama: fakeAsk,
+    tools: {
+      webSearch: async () => { throw new Error("should not search"); },
+      getNews: async () => [],
+      getStock: async () => null,
+      getWeather: async () => null
+    },
+    stream: { note: (n) => notes.push(String(n)), chunk() {} }
+  });
+  assert.ok(out.plan.some((s) => s.tool === "domain"));
+  assert.ok(notes.some((n) => /Using gig-vehicle specialist knowledge/i.test(n)), "notes=" + JSON.stringify(notes));
+  assert.ok(!notes.some((n) => /Synthesizing from .*source/i.test(n)), "must not say synthesizing from tool sources on pack-only");
+  const prompt = buildSynthesisPrompt(
+    "What's the best car for DoorDash under $10000?",
+    "search",
+    { web: null, news: null, stocks: {}, weather: null, domainPack: require("./domain/gigVehicle").loadGigVehicleDomainPack(), errors: [] },
+    true
+  );
+  assert.match(prompt, /PACK-ONLY|pack heuristic/i);
+  assert.match(prompt, /Do NOT invent TDI|DFW market scrapes|fake citations/i);
+  console.log("All research-loop tests passed.");
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

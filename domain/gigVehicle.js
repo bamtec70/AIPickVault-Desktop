@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 /**
  * Local domain knowledge for gig/delivery vehicle advice.
@@ -32,10 +32,11 @@ const FALLBACK_PACK = [
   "Gig/delivery vehicle heuristics for Blake (Fort Worth / Alliance 76177).",
   "Platforms: DoorDash, Uber, Uber Eats, Roadie, Amazon Flex, Shipt.",
   "Maintains a cargo van; also evaluating sub-$10k car for food/gig delivery.",
-  "Rank by annual cost, reliability, maintenance for high-mile stop-go work.",
-  "Strong used picks often: Corolla/Civic, Prius (check gen + battery), Camry/Accord.",
-  "Prius: Gen2 battery EOL risk; Gen3 check neglected-engine issues; Gen4 rarely under $10k — verify recalls via NHTSA tools, never invent campaign IDs.",
-  "Never invent listings/prices/URLs; label estimates; no double-counted cost buckets."
+  "Rank by annual cost, reliability, maintenance for ~25-30k mi/yr multi-app gig use.",
+  "Endorsed (2026-09-14): Prius Gen3 2010-2015 only if hybrid battery SOH verified via PPI; else Corolla 2010-2015 LE/SE safest default.",
+  "Corolla can win TCO if Prius battery unverified/bad. Civic 2011-2013 oil dilution = estimate/verify.",
+  "Van for Roadie/Flex; car for food apps (van fuel penalty on food days).",
+  "Never invent listings/prices/URLs; pack-only answers are pack heuristic/estimate; no double-counted cost buckets."
 ].join("\n");
 
 function isGigVehicleDomainAsk(message, route) {

@@ -11,7 +11,7 @@ const { needsFactualRefresh } = require("./router");
  * Multi-step research agent loop for AIPickVault Desktop.
  *
  * planTools(route, message) -> ordered steps (1–3)
- * runResearchLoop(...)      -> execute tools → synthesize cited answer
+ * runResearchLoop(...)      -> execute tools â†’ synthesize cited answer
  */
 
 const MAX_STEPS = 3;
@@ -444,7 +444,7 @@ function countCitations(bag) {
 
 function describePlan(steps) {
   if (!steps.length) return "No tools";
-  return steps.map((s) => s.label).join(" → ");
+  return steps.map((s) => s.label).join(" â†’ ");
 }
 
 function dedupeWebResults(list) {
@@ -534,6 +534,12 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
   parts.push(`- Cite ONLY titles + exact links that appear in the tool lists below. Never invent URLs, Autotrader/Cars.com listing links, or fake AAA/insurance stats.`);
   parts.push(`- Never invent specific for-sale cars, VINs, dealer inventory, asking prices, or "verified at dealer" claims. If no live listings are in tool results, say to check Autotrader/Cars.com filters for Fort Worth / Alliance (76177).`);
   parts.push(`- Label estimates clearly vs sourced facts. Include a short "Sourced vs estimate" line when mixing both.`);
+  const hasLiveWeb = Array.isArray(bag.web) && bag.web.length > 0;
+  const hasLiveNews = Array.isArray(bag.news) && bag.news.length > 0;
+  const packOnly = !!(bag.domainPack && String(bag.domainPack).length > 40) && !hasLiveWeb && !hasLiveNews;
+  if (packOnly) {
+    parts.push(`- PACK-ONLY turn: no live web/news tool results were used. In "Sourced vs estimate", say pack heuristic / estimate (local gig-vehicle specialist pack). Do NOT invent TDI, DFW market scrapes, dealer quotes, Autotrader/Cars.com "sources", listing prices, or fake citations. Point to Autotrader/Cars.com filters for Fort Worth / Alliance (76177) without claiming you pulled live inventory.`);
+  }
   parts.push(`- Do not invent NHTSA recall campaign IDs unless present in tool text; if unsure, say so and rely on what the sources show.`);
   parts.push(`- Rough annual cost buckets (fuel, insurance, maintenance, tires) OK if labeled estimates with uncertainty. No fake precision. Do NOT double-count buckets (e.g. tires twice).`);
   parts.push(`- If sources are thin/spammy, still advise like a decisive courier-aware local using solid US used-car knowledge. Do not apologize about tools.`);
@@ -628,7 +634,7 @@ async function runResearchLoop(opts) {
 
   for (const s of steps) {
     if (s.queryMeta && s.queryMeta.wasRewritten) {
-      stream.note(`Query rewrite: "${String(s.queryMeta.original || "").slice(0, 80)}" → "${s.args.query}"`);
+      stream.note(`Query rewrite: "${String(s.queryMeta.original || "").slice(0, 80)}" â†’ "${s.args.query}"`);
     } else if (s.tool === "search" && s.args && s.args.query) {
       stream.note(`Search query: "${s.args.query}"`);
     }
@@ -684,7 +690,7 @@ async function runResearchLoop(opts) {
         } else if (outcome.kind === "weather" && outcome.data && outcome.data.location) {
           const w = outcome.data;
           const bits = [w.location];
-          if (w.current) bits.push(`${w.current.temp_f}°F, ${w.current.condition || ""}`.trim());
+          if (w.current) bits.push(`${w.current.temp_f}Â°F, ${w.current.condition || ""}`.trim());
           stream.note(`Weather loaded: ${bits.join(" — ")}`);
         }
       } else {
@@ -748,7 +754,12 @@ async function runResearchLoop(opts) {
     return { text, model, plan: steps, bag };
   }
 
-  stream.note(`Synthesizing from ${citations || "tool"} source${citations === 1 ? "" : "s"}…`);
+  const packOnlySynth = hasDomain && citations === 0 && !hasStock && !hasWeather;
+  if (packOnlySynth) {
+    stream.note("Using gig-vehicle specialist knowledge…");
+  } else {
+    stream.note(`Synthesizing from ${citations || "tool"} source${citations === 1 ? "" : "s"}…`);
+  }
   const prompt = buildSynthesisPrompt(message, route.intent, bag, wantsRecommendation);
   const text = await askOllama(prompt, model, stream.chunk, askOpts);
   return { text, model, plan: steps, bag };
