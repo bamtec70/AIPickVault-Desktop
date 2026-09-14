@@ -533,10 +533,10 @@ function isSearchIntent(text, lower) {
   ) {
     return true;
   }
-  // Locate recommended vehicle
+  // Locate / find listing for any vehicle (Corolla, Civic, F-150, ...)
   if (
-    /\b(locate|find|help\s+me\s+find)\b/i.test(lower) &&
-    /\b(corollas?|corrolas?|carollas?|prius|toyota|recommended|you\s+recommended)\b/i.test(lower)
+    /\b(locate|find|help\s+me\s+find|search\s+for)\b/i.test(lower) &&
+    /\b(corollas?|corrolas?|carollas?|prius|civic|camry|accord|f[- ]?150|toyota|honda|ford|chevrolet|chevy|nissan|hyundai|kia|mazda|subaru|jeep|ram|dodge|recommended|you\s+recommended|for\s+sale)\b/i.test(lower)
   ) {
     return true;
   }

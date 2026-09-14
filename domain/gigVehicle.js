@@ -48,6 +48,13 @@ const FALLBACK_PACK = [
 const NAMED_GIG_MODELS =
   /\b(prius(?:es)?|corollas?|corrolas?|carollas?|corrollas?|civics?|camrys?|accords?|yaris(?:es)?|fits?|siennas?|odysseys?|transits?|promasters?|sprinters?|rav4s?|cr[- ]?vs?)\b/i;
 
+/** Broader US models for listing locate (any vehicle, not gig-pack-only). */
+const VEHICLE_LISTING_MODELS =
+  /\b(prius(?:es)?|corollas?|corrolas?|carollas?|corrollas?|civics?|camrys?|accords?|yaris(?:es)?|fits?|siennas?|odysseys?|transits?|promasters?|sprinters?|rav4s?|cr[- ]?vs?|f[- ]?150s?|f[- ]?250s?|silverados?|sierras?|rams?|tacomas?|tundras?|altimas?|sentras?|maximas?|rogues?|pathfinders?|elantras?|sonatas?|optimas?|sportages?|tucsons?|mazda3|mazda6|cx[- ]?[359]|outbacks?|foresters?|imprezas?|wranglers?|chargers?|challengers?|mustangs?|focus(?:es)?|fusions?|impalas?|malibus?|equinox(?:es)?|explorers?|escapes?|edges?|pilot|highlanders?|4runners?|wrappers?|jettas?|passats?|golf|beetles?|model\s+[3syx]|cybertruck)\b/i;
+
+const VEHICLE_MAKES =
+  /\b(toyota|honda|ford|chevrolet|chevy|gmc|ram|dodge|chrysler|nissan|hyundai|kia|mazda|subaru|jeep|bmw|mercedes|volkswagen|vw|lexus|acura|buick|cadillac|lincoln|tesla|audi|volvo|porsche|mini|mitsubishi|infiniti|genesis)\b/i;
+
 function historyBlob(conversationHistory) {
   if (!Array.isArray(conversationHistory) || !conversationHistory.length) return "";
   return conversationHistory
@@ -110,33 +117,70 @@ function isYearRecallAsk(message) {
   );
 }
 
+function hasListingLocateVerb(lower) {
+  return (
+    /\b(locate|find|search\s+for|look\s*(?:up|for)|show\s+me|help\s+me\s+find)\b/i.test(lower) ||
+    /\b(where\s+(?:can|do)\s+i\s+(?:find|buy|get))\b/i.test(lower) ||
+    /\bfor\s+sale\b/i.test(lower)
+  );
+}
+
+function hasRecommendedVehicleCue(lower) {
+  return /\b(recommend(?:ed|ation)?|you\s+(?:suggested|said|mentioned|picked)|from\s+earlier|the\s+one\s+you)\b/i.test(
+    lower
+  );
+}
+
+function hasAnyVehicleListingCue(lower) {
+  return (
+    VEHICLE_LISTING_MODELS.test(lower) ||
+    NAMED_GIG_MODELS.test(lower) ||
+    VEHICLE_MAKES.test(lower) ||
+    (/\b(20\d{2})\b/.test(lower) && /\b(car|truck|suv|vehicle|sedan|pickup|hybrid|coupe|hatchback|minivan)\b/i.test(lower))
+  );
+}
+
 /**
- * "Locate / find the Corolla/Prius you recommended" — pack answer + listing tools.
+ * Locate / find / for-sale / under-budget listing search for ANY named vehicle
+ * (Civic, F-150, Corolla, …) — not Corolla/gig-pack-only.
  */
 function isLocateRecommendedVehicleAsk(message) {
   const lower = String(message || "").toLowerCase();
   if (!lower.trim()) return false;
-  const locate =
-    /\b(locate|find|search\s+for|look\s*(?:up|for)|show\s+me|help\s+me\s+find)\b/i.test(lower) ||
-    /\b(where\s+(?:can|do)\s+i\s+(?:find|buy|get))\b/i.test(lower);
-  const recommended =
-    /\b(recommend(?:ed|ation)?|you\s+(?:suggested|said|mentioned|picked)|from\s+earlier|the\s+one\s+you)\b/i.test(
-      lower
-    );
-  const model = NAMED_GIG_MODELS.test(lower) || /\b(toyota|honda)\b/i.test(lower);
+  const locate = hasListingLocateVerb(lower);
+  const recommended = hasRecommendedVehicleCue(lower);
+  const model = hasAnyVehicleListingCue(lower);
   return (locate && (recommended || model)) || (recommended && model);
+}
+
+/**
+ * True when locate should rest on the gig-vehicle pack (recommended Corolla/Prius,
+ * gig context, or user named Corolla/Prius). Generic Civic/F-150 listing = false.
+ */
+function isPackBackedLocateAsk(message) {
+  const text = String(message || "");
+  const lower = text.toLowerCase();
+  if (!isLocateRecommendedVehicleAsk(text) && !isYearRecallAsk(text)) return false;
+  if (hasRecommendedVehicleCue(lower)) return true;
+  if (/\b(doordash|uber|roadie|amazon\s+flex|shipt|gig\s+(?:delivery|work)|last\s*mile|food\s+delivery)\b/i.test(lower)) {
+    return true;
+  }
+  if (/\b(corollas?|corrolas?|carollas?|corrollas?|prius(?:es)?)\b/i.test(lower)) return true;
+  return false;
 }
 
 /**
  * Hard same-subject vehicle / TCO / mileage / van-vs-car advice — even without
  * repeating "DoorDash". Follow-ups like "Prius vs Corolla at 40k mi/yr" qualify.
+ * Generic "find me a Civic under $12k" is listing search, not gig-pack advice.
  */
 function isGigVehicleAdviceText(message) {
   const text = String(message || "");
   const lower = text.toLowerCase();
   if (!lower.trim()) return false;
 
-  if (isYearRecallAsk(text) || isLocateRecommendedVehicleAsk(text)) return true;
+  if (isYearRecallAsk(text)) return true;
+  if (isPackBackedLocateAsk(text)) return true;
 
   const vehicleish = /\b(car|truck|suv|vehicle|hybrid|sedan|prius|civic|corolla|corrola|carolla|camry|accord|cargo\s+van|van|mpg|ownership)\b/i.test(
     text
@@ -247,6 +291,7 @@ function shouldUseKnowledgeFirst(message, route, opts) {
  * Upgrade chat (or tool-less) routes to search so planTools can emit plan: domain
  * for gig-vehicle / Prius / Corolla / TCO / mileage / van-vs-car advice — including
  * hard same-subject follow-ups. needsFactualRefresh / forceToolRefresh still win → search tools.
+ * Also forces tools for any-vehicle listing locate (Civic, F-150, …).
  */
 function ensureGigVehicleDomainRoute(message, route, opts) {
   const text = String(message || "").trim();
@@ -273,7 +318,9 @@ function ensureGigVehicleDomainRoute(message, route, opts) {
   }
 
   const locate = isLocateRecommendedVehicleAsk(text);
+  const packLocate = isPackBackedLocateAsk(text);
   const yearRecall = isYearRecallAsk(text);
+  const usePack = !locate || packLocate || yearRecall;
 
   // Already on a tool path — keep intent; ensure recommendation / locate flags.
   if (r.intent === "search") {
@@ -283,9 +330,10 @@ function ensureGigVehicleDomainRoute(message, route, opts) {
         ...payload,
         query: payload.query || text,
         tools: Array.isArray(payload.tools) && payload.tools.length ? payload.tools : ["search"],
-        wantsRecommendation: true,
-        domainPackPreferred: !locate,
+        wantsRecommendation: usePack ? true : !!payload.wantsRecommendation,
+        domainPackPreferred: usePack && !locate,
         locateRecommendedVehicle: locate || undefined,
+        packBackedLocate: packLocate || undefined,
         yearRecall: yearRecall || undefined,
         // Locate needs live listing search; year-recall stays pack-first.
         forceToolRefresh: locate ? true : payload.forceToolRefresh
@@ -299,9 +347,10 @@ function ensureGigVehicleDomainRoute(message, route, opts) {
       payload: {
         query: text,
         tools: ["search"],
-        wantsRecommendation: true,
-        domainPackPreferred: !locate,
+        wantsRecommendation: usePack || locate ? true : !!payload.wantsRecommendation,
+        domainPackPreferred: usePack && !locate,
         locateRecommendedVehicle: locate || undefined,
+        packBackedLocate: packLocate || undefined,
         yearRecall: yearRecall || undefined,
         forceToolRefresh: locate ? true : undefined
       }
@@ -329,12 +378,14 @@ module.exports = {
   isGigVehicleAdviceText,
   isYearRecallAsk,
   isLocateRecommendedVehicleAsk,
+  isPackBackedLocateAsk,
   shouldUseKnowledgeFirst,
   ensureGigVehicleDomainRoute,
   conversationSuggestsGigVehicle,
   durableSuggestsGigVehicle,
   domainPackPromptSection,
   NAMED_GIG_MODELS,
+  VEHICLE_LISTING_MODELS,
+  VEHICLE_MAKES,
   MD_PATH
 };
-

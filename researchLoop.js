@@ -5,7 +5,11 @@ const {
   domainPackPromptSection,
   loadGigVehicleDomainPack,
   isLocateRecommendedVehicleAsk,
-  isYearRecallAsk
+  isPackBackedLocateAsk,
+  isYearRecallAsk,
+  isGigVehicleDomainAsk,
+  VEHICLE_LISTING_MODELS,
+  VEHICLE_MAKES
 } = require("./domain/gigVehicle");
 const { needsFactualRefresh } = require("./router");
 const { listingSearchQueryFromUrl, isListingSiteUrl } = require("./tools");
@@ -96,10 +100,195 @@ function hasCostReliabilityLanguage(message) {
 }
 
 function isVehicleAsk(message) {
-  return /\b(car|truck|suv|vehicle|hybrid|sedan|hatchback|minivan|civic|corolla|prius|cargo\s+van|van)\b/i.test(
-    String(message || "")
-  );
+  const text = String(message || "");
+  return /\b(car|truck|suv|vehicle|hybrid|sedan|hatchback|minivan|pickup|civic|corolla|prius|camry|accord|cargo\s+van|van|f[- ]?150)\b/i.test(text)
+    || VEHICLE_LISTING_MODELS.test(text)
+    || VEHICLE_MAKES.test(text);
 }
+
+const MODEL_MAKE_TABLE = [
+  { re: /\b(corollas?|corrolas?|carollas?|corrollas?)\b/i, model: "Corolla", make: "Toyota", packYears: "2010-2015", packTrim: "LE SE" },
+  { re: /\b(prius(?:es)?)\b/i, model: "Prius", make: "Toyota", packYears: "2010-2015" },
+  { re: /\b(civics?)\b/i, model: "Civic", make: "Honda" },
+  { re: /\b(camrys?)\b/i, model: "Camry", make: "Toyota" },
+  { re: /\b(accords?)\b/i, model: "Accord", make: "Honda" },
+  { re: /\b(rav4s?)\b/i, model: "RAV4", make: "Toyota" },
+  { re: /\b(cr[- ]?vs?)\b/i, model: "CR-V", make: "Honda" },
+  { re: /\b(f[- ]?150s?)\b/i, model: "F-150", make: "Ford" },
+  { re: /\b(f[- ]?250s?)\b/i, model: "F-250", make: "Ford" },
+  { re: /\b(silverados?)\b/i, model: "Silverado", make: "Chevrolet" },
+  { re: /\b(tacomas?)\b/i, model: "Tacoma", make: "Toyota" },
+  { re: /\b(tundras?)\b/i, model: "Tundra", make: "Toyota" },
+  { re: /\b(altimas?)\b/i, model: "Altima", make: "Nissan" },
+  { re: /\b(sentras?)\b/i, model: "Sentra", make: "Nissan" },
+  { re: /\b(elantras?)\b/i, model: "Elantra", make: "Hyundai" },
+  { re: /\b(outbacks?)\b/i, model: "Outback", make: "Subaru" },
+  { re: /\b(wranglers?)\b/i, model: "Wrangler", make: "Jeep" },
+  { re: /\b(mustangs?)\b/i, model: "Mustang", make: "Ford" },
+  { re: /\b(siennas?)\b/i, model: "Sienna", make: "Toyota" },
+  { re: /\b(odysseys?)\b/i, model: "Odyssey", make: "Honda" },
+  { re: /\b(yaris(?:es)?)\b/i, model: "Yaris", make: "Toyota" },
+  { re: /\b(fits?)\b/i, model: "Fit", make: "Honda" }
+];
+
+const MAKE_CANON = [
+  { re: /\b(toyota)\b/i, make: "Toyota" },
+  { re: /\b(honda)\b/i, make: "Honda" },
+  { re: /\b(ford)\b/i, make: "Ford" },
+  { re: /\b(chevrolet|chevy)\b/i, make: "Chevrolet" },
+  { re: /\b(gmc)\b/i, make: "GMC" },
+  { re: /\b(nissan)\b/i, make: "Nissan" },
+  { re: /\b(hyundai)\b/i, make: "Hyundai" },
+  { re: /\b(kia)\b/i, make: "Kia" },
+  { re: /\b(mazda)\b/i, make: "Mazda" },
+  { re: /\b(subaru)\b/i, make: "Subaru" },
+  { re: /\b(jeep)\b/i, make: "Jeep" },
+  { re: /\b(ram)\b/i, make: "Ram" },
+  { re: /\b(dodge)\b/i, make: "Dodge" },
+  { re: /\b(lexus)\b/i, make: "Lexus" },
+  { re: /\b(acura)\b/i, make: "Acura" },
+  { re: /\b(tesla)\b/i, make: "Tesla" },
+  { re: /\b(volkswagen|vw)\b/i, make: "Volkswagen" },
+  { re: /\b(bmw)\b/i, make: "BMW" }
+];
+
+/**
+ * Extract make/model/years/trim/budget/location for any vehicle listing ask.
+ * Defaults location to Fort Worth / 76177 only when user omits one.
+ * Corolla/Prius pack years apply when user named those models (or pack-backed locate) and gave no years.
+ */
+function extractVehicleListingSpec(message, opts) {
+  const text = String(message || "");
+  const lower = text.toLowerCase();
+  const budget = extractBudget(text);
+  let make = null;
+  let model = null;
+  let packYears = null;
+  let packTrim = null;
+
+  for (const row of MODEL_MAKE_TABLE) {
+    if (row.re.test(text)) {
+      model = row.model;
+      make = row.make;
+      packYears = row.packYears || null;
+      packTrim = row.packTrim || null;
+      break;
+    }
+  }
+  if (!make) {
+    for (const row of MAKE_CANON) {
+      if (row.re.test(text)) {
+        make = row.make;
+        break;
+      }
+    }
+  }
+
+  let years = null;
+  const range = text.match(/\b(19\d{2}|20\d{2})\s*[-–—to]+\s*(19\d{2}|20\d{2})\b/i);
+  if (range) {
+    years = range[1] + "-" + range[2];
+  } else {
+    const singles = [];
+    const reY = /\b(19\d{2}|20\d{2})\b/g;
+    let m;
+    while ((m = reY.exec(text)) !== null) {
+      const y = parseInt(m[1], 10);
+      if (y >= 1990 && y <= 2030) singles.push(String(y));
+    }
+    if (singles.length === 1) years = singles[0];
+    else if (singles.length >= 2) years = singles[0] + "-" + singles[1];
+  }
+
+  let trim = null;
+  const trimM = text.match(/\b(LE|SE|XLE|XSE|EX|LX|DX|Sport|Limited|Touring|Hybrid|TRD|Lariat|XLT|King Ranch|Platinum|S|SV|SL)\b/);
+  if (trimM) trim = trimM[1];
+
+  let city = null;
+  let zip = null;
+  const zipM = text.match(/\b(\d{5})(?:-\d{4})?\b/);
+  if (zipM) zip = zipM[1];
+  if (/\bfort\s*worth\b/i.test(text)) city = "Fort Worth";
+  else if (/\bdallas\b/i.test(text)) city = "Dallas";
+  else if (/\barlington\b/i.test(text)) city = "Arlington";
+  else if (/\balliance\b/i.test(text)) city = "Alliance";
+
+  if (!city && !zip) {
+    city = "Fort Worth";
+    zip = "76177";
+  } else if (city && !zip && /fort worth|alliance/i.test(city)) {
+    zip = "76177";
+  } else if (zip === "76177" && !city) {
+    city = "Fort Worth";
+  }
+
+  const packBacked = !!(opts && opts.packBacked) || isPackBackedLocateAsk(text);
+  const namedCorollaPrius = /\b(corollas?|corrolas?|carollas?|corrollas?|prius(?:es)?)\b/i.test(text);
+  if (!years && packYears && (packBacked || namedCorollaPrius)) {
+    years = packYears;
+  }
+  if (!trim && packTrim && (packBacked || namedCorollaPrius) && /corolla/i.test(model || "")) {
+    trim = packTrim;
+  }
+
+  // Pack-backed locate with no model named → Corolla default
+  if (!model && packBacked) {
+    model = "Corolla";
+    make = make || "Toyota";
+    if (!years) years = "2010-2015";
+    if (!trim) trim = "LE SE";
+  }
+
+  return {
+    make,
+    model,
+    years,
+    trim,
+    budget,
+    location: { city: city || "Fort Worth", zip: zip || "76177" },
+    packBacked
+  };
+}
+
+/**
+ * Shared listing-query builder for any vehicle locate / under-budget search.
+ */
+function buildVehicleListingQueries(spec) {
+  const s = spec || {};
+  const make = s.make || null;
+  const model = s.model || "used car";
+  const years = s.years || null;
+  const trim = s.trim || null;
+  const budget = s.budget != null ? s.budget : null;
+  const city = (s.location && s.location.city) || "Fort Worth";
+  const zip = (s.location && s.location.zip) || "76177";
+  const yearSite = years ? String(years).replace(/-/g, "..") : null;
+  const head = [years, make, model, trim].filter(Boolean).join(" ");
+  const headNoTrim = [years, make, model].filter(Boolean).join(" ");
+  const queries = [];
+
+  if (budget != null) {
+    queries.push([head, "under", String(budget), "for sale", city].filter(Boolean).join(" "));
+    queries.push(
+      ["site:autotrader.com", make, model, yearSite || years, "price under", String(budget), zip]
+        .filter(Boolean)
+        .join(" ")
+    );
+    queries.push(
+      ["site:cars.com", headNoTrim || model, "under", String(budget), city].filter(Boolean).join(" ")
+    );
+  } else {
+    queries.push([head, "for sale", city, zip].filter(Boolean).join(" "));
+    queries.push(
+      ["site:autotrader.com", make, model, years, "near", zip].filter(Boolean).join(" ")
+    );
+    queries.push(
+      ["site:cars.com", make, model, years, "used", city].filter(Boolean).join(" ")
+    );
+  }
+  return queries.map((q) => String(q).replace(/\s+/g, " ").trim()).filter(Boolean);
+}
+
 
 /**
  * Intent-based rewrite — NOT naive stopword deletion.
@@ -134,31 +323,13 @@ function rewriteSearchQuery(message, opts) {
 
   const queries = [];
 
-  // Locate recommended Corolla/Prius → listing search near 76177 (preserve budget)
+  // Any-vehicle locate / find / for-sale / under-budget listing search (preserve budget)
   if (isLocateRecommendedVehicleAsk(raw) || isLocateRecommendedVehicleAsk(text)) {
-    const modelBit =
-      (text.match(/\b(prius|corollas?|corrolas?|carollas?|civics?|camrys?|accords?)\b/i) || [])[0] ||
-      "Corolla";
-    const model = /prius/i.test(modelBit)
-      ? "Prius"
-      : /civic/i.test(modelBit)
-        ? "Civic"
-        : /camry/i.test(modelBit)
-          ? "Camry"
-          : /accord/i.test(modelBit)
-            ? "Accord"
-            : "Corolla";
-    const make = /civic|accord/i.test(model) ? "Honda" : "Toyota";
-    if (budget != null) {
-      // Prefer budget-preserving listing queries (under $N / price under N)
-      queries.push([make, model, "2010-2015", "under", String(budget), "Fort Worth"].join(" "));
-      queries.push("site:autotrader.com " + model + " 2010..2015 price under " + budget + " 76177");
-      queries.push("site:cars.com " + make + " " + model + " 2010-2015 under " + budget + " Fort Worth");
-    } else {
-      queries.push(model + " 2010-2015 LE SE for sale Fort Worth 76177");
-      queries.push("site:autotrader.com " + make + " " + model + " 2010-2015 near 76177");
-      queries.push("site:cars.com " + make + " " + model + " 2010-2015 used Fort Worth");
-    }
+    const spec = extractVehicleListingSpec(raw || text, {
+      packBacked: isPackBackedLocateAsk(raw) || isPackBackedLocateAsk(text)
+    });
+    if (budget != null) spec.budget = budget;
+    for (const q of buildVehicleListingQueries(spec)) queries.push(q);
   }
 
   // Recall / NHTSA / battery follow-ups — tight factual queries first
@@ -171,7 +342,8 @@ function rewriteSearchQuery(message, opts) {
     }
   }
 
-  if ((wantsRec || looksLikeEssay) && (vehicle || gig.isGig)) {
+  const didListingLocate = queries.length > 0 && (isLocateRecommendedVehicleAsk(raw) || isLocateRecommendedVehicleAsk(text));
+  if ((wantsRec || looksLikeEssay) && (vehicle || gig.isGig) && (!didListingLocate || gig.isGig)) {
     const platformBit =
       gig.label && (gig.label.includes("DoorDash") || gig.label.includes("Uber"))
         ? "DoorDash Uber"
@@ -348,8 +520,13 @@ function planTools(route, message) {
         knowledgeFirst: true
       }];
     }
-    // Locate recommended vehicle: pack + listing search (not pack-only, not invent inventory)
-    if (isLocateRecommendedVehicleAsk(text) || isLocateRecommendedVehicleAsk(rawQuery) || payload.locateRecommendedVehicle) {
+    // Pack-backed locate (recommended Corolla/Prius / gig): pack + listing search.
+    // Generic Civic/F-150 listing locate skips pack — search tools only.
+    if (
+      isPackBackedLocateAsk(text) ||
+      isPackBackedLocateAsk(rawQuery) ||
+      payload.packBackedLocate
+    ) {
       steps.push({
         id: "domain",
         tool: "domain",
@@ -358,9 +535,10 @@ function planTools(route, message) {
         knowledgeFirst: false
       });
     }
-    const multiAngle = !knowledgeFirst && wantsRec && (costRel || rewritten.gig.isGig || isVehicleAsk(rawQuery));
+    const locateListing = isLocateRecommendedVehicleAsk(text) || isLocateRecommendedVehicleAsk(rawQuery) || !!payload.locateRecommendedVehicle;
+    const multiAngle = !knowledgeFirst && (wantsRec || locateListing) && (costRel || rewritten.gig.isGig || isVehicleAsk(rawQuery) || locateListing);
 
-    if (toolsHint.includes("search") || toolsHint.length === 0) {
+    if (toolsHint.includes("search") || toolsHint.length === 0 || locateListing) {
       const primary = queryList[0] || rawQuery;
       steps.push({
         id: "search", tool: "search", label: "Web search",
@@ -369,7 +547,7 @@ function planTools(route, message) {
       });
     }
 
-    if (wantsRec && steps.some((s) => s.tool === "search")) {
+    if ((wantsRec || locateListing) && steps.some((s) => s.tool === "search")) {
       const secondQ = queryList[1] || rewritten.alternate;
       if (secondQ && secondQ.toLowerCase() !== String(steps[0].args.query).toLowerCase()) {
         steps.push({
@@ -404,8 +582,8 @@ function planTools(route, message) {
       });
     }
 
-    const minSteps = multiAngle ? 3 : wantsRec ? 2 : 1;
-    while (wantsRec && steps.length < minSteps && steps.length < MAX_STEPS && steps.some((s) => s.tool === "search")) {
+    const minSteps = multiAngle ? 3 : (wantsRec || locateListing) ? 2 : 1;
+    while ((wantsRec || locateListing) && steps.length < minSteps && steps.length < MAX_STEPS && steps.some((s) => s.tool === "search")) {
       const fallbackQ =
         queryList[steps.filter((s) => s.tool === "search").length] ||
         rewritten.alternate ||
@@ -747,12 +925,30 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
   parts.push(`- Do not over-claim NHTSA sourcing. If campaign details are not in tool snippets, say you do not have the campaign text — do not fabricate IDs or rates.`);
   parts.push(`- Rough annual cost buckets (fuel, insurance, maintenance, tires) OK if labeled estimates with uncertainty. Illustrative ranges OK only if clearly labeled estimate; prefer qualitative. No fake precision. Do NOT double-count buckets (e.g. tires twice).`);
   parts.push(`- Prefer Alliance / Fort Worth 76177 framing; never invent ZIP bands (e.g. 76102–76140).`);
-  parts.push(`- LOCKED: Corolla **2010–2015 LE/SE** (not XLE-only, not 2014–2015-only). At ~40k mi/yr Corolla is safe default; Prius Gen3 only with verified healthy battery via PPI/battery report.`);
-  parts.push(`- ~40k mi/yr is ANNUAL USE — never invent a hard under-40k listing odometer cap. Prefer lower miles; higher OK if price/condition/PPI justify.`);
-  parts.push(`- Never invent example asking prices/URLs, claim "I've tested this", "100% of listings", "100% safe", or "2010–2013 too risky" without tool evidence.`);
-  parts.push(`- Year-recall ("what years" / "forgot what years") → answer 2010–2015 LE/SE from the domain pack.`);
-  parts.push(`- Locate/find the recommended Corolla/Prius → the pack recommendation EXISTS (Corolla 2010–2015 LE/SE default). Never say "no specific Corolla was previously recommended." Restate pack pick + listing filters / tool links near 76177; never invent listings.`);
-  if (isLocateRecommendedVehicleAsk(message)) {
+  const listingAsk = isLocateRecommendedVehicleAsk(message);
+  const packBackedLocate = isPackBackedLocateAsk(message);
+  const gigDomainAsk = (() => {
+    try { return isGigVehicleDomainAsk(message, { intent, payload: { wantsRecommendation: !!wantsRecommendation } }); }
+    catch (_) { return !!(gig.isGig || packBackedLocate || isYearRecallAsk(message)); }
+  })();
+  const useGigPackFraming = !!(
+    packBackedLocate ||
+    isYearRecallAsk(message) ||
+    gig.isGig ||
+    (gigDomainAsk && !listingAsk)
+  );
+
+  if (useGigPackFraming) {
+    parts.push(`- LOCKED: Corolla **2010–2015 LE/SE** (not XLE-only, not 2014–2015-only). At ~40k mi/yr Corolla is safe default; Prius Gen3 only with verified healthy battery via PPI/battery report.`);
+    parts.push(`- ~40k mi/yr is ANNUAL USE — never invent a hard under-40k listing odometer cap. Prefer lower miles; higher OK if price/condition/PPI justify.`);
+    parts.push(`- Never invent example asking prices/URLs, claim "I've tested this", "100% of listings", "100% safe", or "2010–2013 too risky" without tool evidence.`);
+    parts.push(`- Year-recall ("what years" / "forgot what years") → answer 2010–2015 LE/SE from the domain pack.`);
+    parts.push(`- Locate/find the recommended Corolla/Prius → the pack recommendation EXISTS (Corolla 2010–2015 LE/SE default). Never say "no specific Corolla was previously recommended." Restate pack pick + listing filters / tool links near 76177; never invent listings.`);
+  } else if (listingAsk) {
+    parts.push(`- Vehicle listing search: use the make/model/years/budget the user named. Do NOT substitute Corolla 2010–2015 or invent gig-pack defaults for a different vehicle.`);
+    parts.push(`- Never invent specific for-sale cars, VINs, dealer inventory, asking prices, or listing URLs.`);
+  }
+  if (listingAsk) {
     parts.push(`- LOCATE/FIND LISTING bans:`);
     parts.push(`- Never conclude "no listings exist" (or equivalent scarcity) from market-average / CarGurus averages / Edmunds guide / valuation pages alone.`);
     parts.push(`- Never invent "mislabeled year" traps, "ignore the $X listing", or "typically" dealer-fraud claims unless that exact claim appears in tool text.`);
@@ -766,7 +962,12 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
   parts.push(`- Ban nonsense: do NOT call mainstream US-market cars (Honda, Toyota, Hyundai, Kia, etc.) "foreign imports to avoid." Judge reliability, parts cost, MPG.`);
   parts.push(`- No raw JSON. Short structured sections.`);
 
-  if (wantsRecommendation || vehicle || gig.isGig) {
+  if (listingAsk && !useGigPackFraming) {
+    parts.push(`Structure:`);
+    parts.push(`1) Lead with concrete for-sale results from tool text (year/trim/price/miles/link) for the vehicle named — or honest "no live cards" + filter URL + paste request.`);
+    parts.push(`2) Keep the make/model/years/budget/location the user named; do not switch to Corolla/gig-pack defaults.`);
+    parts.push(`3) Prefer Alliance / Fort Worth 76177 only as default location when user omitted one.`);
+  } else if (wantsRecommendation || vehicle || gig.isGig) {
     parts.push(`Structure:`);
     parts.push(`1) Best pick(s) first (model years that often clear the used budget).`);
     parts.push(`2) Why: MPG / stop-go, parts, reliability, cargo.`);
@@ -780,10 +981,13 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
     parts.push(`- Best Choice / Runner Up / Third Choice (Avoid only for truly bad gig picks: thirsty trucks, project cars).`);
   }
 
-  if (vehicle || gig.isGig || wantsRecommendation || bag.domainPack || isLocateRecommendedVehicleAsk(message) || isYearRecallAsk(message)) {
+  if (useGigPackFraming || isYearRecallAsk(message) || (bag.domainPack && (packBackedLocate || gig.isGig || isYearRecallAsk(message)))) {
     parts.push(``);
     parts.push(`Knowledge-first mode: reason from the local domain pack + durable memory first. Use tool results only to verify live facts (recalls, prices, listings, insurance). Do not invent listings.`);
     parts.push(domainPackPromptSection());
+  } else if (listingAsk) {
+    parts.push(``);
+    parts.push(`Listing-search mode: answer about the vehicle the user named. Quote only concrete listing facts from tool text. Do not invent inventory or pivot to Corolla/gig-pack defaults.`);
   }
 
   parts.push(``);
@@ -1095,5 +1299,6 @@ module.exports = {
   describePlan, rewriteSearchQuery, rewriteNewsTopic, resultsSeemThinOrOffTopic,
   buildSynthesisPrompt, buildWeatherSynthesisPrompt, buildFetchSynthesisPrompt, extractBudget, extractGigUseCase, extractCriteria,
   hasCostReliabilityLanguage, rankWebResultsForSynth, scoreWebResultForSynth, MAX_STEPS,
-  shouldUseKnowledgeFirst, isLocateRecommendedVehicleAsk, isYearRecallAsk
+  shouldUseKnowledgeFirst, isLocateRecommendedVehicleAsk, isPackBackedLocateAsk, isYearRecallAsk,
+  extractVehicleListingSpec, buildVehicleListingQueries
 };

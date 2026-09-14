@@ -528,4 +528,49 @@ async function __fetchPageTest() {
   assert.match(fetchPrompt, /API-key|\.env/i);
 }
 
+
+
+// --- Generic vehicle locate (any make/model, not Corolla-only) ---
+{
+  const { extractVehicleListingSpec, buildVehicleListingQueries, isPackBackedLocateAsk } = require("./researchLoop");
+  const { isLocateRecommendedVehicleAsk } = require("./domain/gigVehicle");
+
+  const civic = "Find a 2018 Honda Civic under $12k near Fort Worth";
+  assert.strictEqual(isLocateRecommendedVehicleAsk(civic), true, "Civic locate should route as listing locate");
+  assert.strictEqual(isPackBackedLocateAsk(civic), false, "Civic locate must not be pack-backed Corolla");
+  assert.strictEqual(extractBudget(civic), 12000);
+  const civicRw = rewriteSearchQuery(civic, { wantsRecommendation: false });
+  assert.strictEqual(civicRw.budget, 12000);
+  const civicJoined = civicRw.queries.join(" | ");
+  assert.match(civicJoined, /Civic/i, "queries must mention Civic: " + civicJoined);
+  assert.match(civicJoined, /2018/, "queries must mention 2018: " + civicJoined);
+  assert.match(civicJoined, /under\s+12000|price under\s+12000/i, "Civic budget: " + civicJoined);
+  assert.ok(!/Corolla/i.test(civicJoined), "Civic locate must NOT invent Corolla: " + civicJoined);
+  assert.ok(!/2010-2015|2010\.\.2015/i.test(civicJoined), "Civic locate must NOT invent Corolla years: " + civicJoined);
+
+  const f150 = "Locate a Ford F-150 under $15k";
+  assert.strictEqual(isLocateRecommendedVehicleAsk(f150), true);
+  assert.strictEqual(isPackBackedLocateAsk(f150), false);
+  assert.strictEqual(extractBudget(f150), 15000);
+  const fRw = rewriteSearchQuery(f150, {});
+  const fJoined = fRw.queries.join(" | ");
+  assert.match(fJoined, /F-150|F150/i, "queries must mention F-150: " + fJoined);
+  assert.match(fJoined, /under\s+15000|price under\s+15000/i, "F-150 budget: " + fJoined);
+  assert.ok(!/Corolla/i.test(fJoined), "F-150 locate must NOT invent Corolla: " + fJoined);
+
+  const spec = extractVehicleListingSpec(civic);
+  assert.strictEqual(spec.model, "Civic");
+  assert.strictEqual(spec.make, "Honda");
+  assert.strictEqual(spec.years, "2018");
+  assert.strictEqual(spec.budget, 12000);
+  const built = buildVehicleListingQueries(spec).join(" | ");
+  assert.match(built, /Civic/i);
+  assert.match(built, /12000/);
+
+  const civicPrompt = buildSynthesisPrompt(civic, "search", { web: [{ title: "guide", url: "https://www.edmunds.com/honda/civic/", snippet: "average price" }], news: null, stocks: {}, weather: null, page: null, domainPack: null, errors: [] }, false);
+  assert.match(civicPrompt, /LOCATE\/FIND LISTING bans|no listings exist/i);
+  assert.ok(!/LOCKED:\s*Corolla/i.test(civicPrompt), "Civic listing synth must not LOCK Corolla years");
+}
+
+
 console.log("All research-loop tests passed.");

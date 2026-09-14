@@ -182,6 +182,17 @@ expectIntent("Check out my website www.example.org", "fetch", (r) => {
     "Check Amazon and Walmart for me and let me know a few of the products you find for neodymium magnet.",
     "search"
   );
+
+  const civicQ = "Find a 2018 Honda Civic under $12k near Fort Worth";
+  assert.strictEqual(isLocateRecommendedVehicleAsk(civicQ), true);
+  expectIntent(civicQ, "search");
+  const { isPackBackedLocateAsk } = require("./domain/gigVehicle");
+  assert.strictEqual(isPackBackedLocateAsk(civicQ), false);
+  const fQ = "Locate a Ford F-150 under $15k";
+  assert.strictEqual(isLocateRecommendedVehicleAsk(fQ), true);
+  assert.strictEqual(isPackBackedLocateAsk(fQ), false);
+  expectIntent(fQ, "search");
+
 }
 
 console.log("All router tests passed.");
