@@ -28,18 +28,20 @@ function createWindow() {
 }
 
 async function askOllama(message, model = "llama3") {
-  const response = await fetch("http://127.0.0.1:11434/api/chat", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model,
-      stream: false,
-      messages: [
-        {
-          role: "system",
-          content: `
+  let response;
+  try {
+    response = await fetch("http://127.0.0.1:11434/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        messages: [
+          {
+            role: "system",
+            content: `
             You are AIPickVault Desktop.
 
             You are an AI research and search assistant.
@@ -53,21 +55,54 @@ async function askOllama(message, model = "llama3") {
 
             Do not invent fictional background stories.
           `
-        },
-        {
-          role: "user",
-          content: message
-        }
-      ]
-    })
-  });
+          },
+          {
+            role: "user",
+            content: message
+          }
+        ]
+      })
+    });
+  } catch (err) {
+    const detail = String(err && err.message ? err.message : err);
+    console.error("OLLAMA FETCH ERROR:", detail);
+    if (/ECONNREFUSED|fetch failed|network|ENOTFOUND|ECONNRESET/i.test(detail)) {
+      throw new Error(
+        "Ollama is not running. Start Ollama, then try again."
+      );
+    }
+    throw new Error(
+      "Could not reach Ollama. Make sure it is running on this PC."
+    );
+  }
 
-  const result = await response.json();
+  let result;
+  try {
+    result = await response.json();
+  } catch (err) {
+    console.error("OLLAMA JSON ERROR:", err);
+    throw new Error(
+      "Ollama returned an unexpected response. Check that the selected model is installed."
+    );
+  }
 
   console.log(
     "OLLAMA RESPONSE:",
     JSON.stringify(result, null, 2)
   );
+
+  if (!response.ok || result.error) {
+    const raw = String(result.error || response.statusText || "unknown error");
+    console.error("OLLAMA API ERROR:", raw);
+    if (/not found|pull|unknown model|does not exist/i.test(raw)) {
+      throw new Error(
+        `Model "${model}" is not available in Ollama. Pull it with: ollama pull ${model}`
+      );
+    }
+    throw new Error(
+      "Ollama could not complete the request. Check that Ollama is running and the model is installed."
+    );
+  }
 
   return result.message?.content || "No response received.";
 }
@@ -749,44 +784,23 @@ return {
       } catch (err) {
         console.error(err);
 
+        const msg = String(err && err.message ? err.message : err);
+        let text = "Something went wrong. Please try again.";
+
+        if (/Ollama is not running|Could not reach Ollama/i.test(msg)) {
+          text = msg;
+        } else if (/Model ".*" is not available|model is installed/i.test(msg)) {
+          text = msg;
+        } else if (/ECONNREFUSED|fetch failed/i.test(msg)) {
+          text = "Ollama is not running. Start Ollama, then try again.";
+        }
+
         return {
-          text: `Error: ${err.message}`,
+          text,
           model: "Error"
         };
       }
   });
-    ipcMain.handle("call-tool", async (event, payload) => {
-  try {
-
-    const { type, args } = payload;
-
-    switch (type) {
-
-      case "weather":
-        return await getWeather(args.location);
-
-      case "news":
-        return await getNews(args.topic);
-
-      case "stock":
-        return await getStock(args.symbol);
-
-      case "search":
-        return await webSearch(args.query);
-
-      default:
-        return {
-          error: "Unknown tool type"
-        };
-    }
-
-  } catch (err) {
-
-    return {
-      error: err.message
-    };
-  }
-});
 
 app.whenReady().then(createWindow);
 

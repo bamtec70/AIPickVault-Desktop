@@ -173,6 +173,7 @@
 
       .button-row button {
           flex: 1;
+          margin-top: 0;
       }
       button {
         margin-top: 10px;
@@ -219,7 +220,10 @@
 <div id="chat"></div>
 
 <textarea id="userInput" rows="3" placeholder="Type your message..."></textarea>
-<button id="sendBtn">Send</button>
+<div class="button-row">
+  <button id="sendBtn" type="button">Send</button>
+  <button id="clearBtn" type="button">Clear</button>
+</div>
 
 <script>
     const chat = document.getElementById('chat');
@@ -227,176 +231,123 @@
     const sendBtn = document.getElementById('sendBtn');
     const clearBtn = document.getElementById('clearBtn');
     const modelDisplay = document.getElementById('modelDisplay');
-    chat.innerHTML = `
-    <div class="msg-row">
-        <div class="avatar ai">AI</div>
-        <div class="msg ai-msg">
-            🚀 Welcome to AIPickVault Desktop
+    const modelSelect = document.getElementById('modelSelect');
 
-            Available Tools:
+    const WELCOME_TEXT =
+        "Welcome to AIPickVault Desktop\n\n" +
+        "Available Tools:\n\n" +
+        "Weather\n" +
+        "News\n" +
+        "Stocks\n" +
+        "Search\n\n" +
+        "Try asking:\n\n" +
+        "What's the weather?\n" +
+        "Breaking AI news\n" +
+        "Stock price of NVDA\n" +
+        "Search Texas pharmacy technician requirements";
 
-            🌤 Weather
-            📰 News
-            📈 Stocks
-            🔍 Search
+    function appendMessage(role, text) {
+        const row = document.createElement('div');
+        row.className = 'msg-row';
 
-            Try asking:
+        const avatar = document.createElement('div');
+        avatar.className = 'avatar ' + (role === 'user' ? 'user' : 'ai');
+        avatar.textContent = role === 'user' ? 'U' : 'AI';
 
-            What's the weather?
-            Breaking AI news
-            Stock price of NVDA
-            Search Texas pharmacy technician requirements
-        </div>
-    </div>
-    `;
+        const bubble = document.createElement('div');
+        bubble.className = 'msg ' + (role === 'user' ? 'user-msg' : 'ai-msg');
+        bubble.textContent = text;
 
-    // Extract JSON from <tool> ... </tool>
-    function extractToolJSON(text) {
-        const start = text.indexOf("<tool>");
-        const end = text.indexOf("</tool>");
-        if (start === -1 || end === -1) return null;
-        try {
-            return JSON.parse(text.substring(start + 6, end).trim());
-        } catch {
-            return null;
+        if (role === 'user') {
+            row.appendChild(bubble);
+            row.appendChild(avatar);
+        } else {
+            row.appendChild(avatar);
+            row.appendChild(bubble);
         }
+
+        chat.appendChild(row);
+        chat.scrollTop = chat.scrollHeight;
+        return row;
     }
+
+    function showWelcome() {
+        chat.replaceChildren();
+        appendMessage('ai', WELCOME_TEXT);
+    }
+
+    function createTypingIndicator() {
+        const row = document.createElement('div');
+        row.className = 'msg-row';
+
+        const avatar = document.createElement('div');
+        avatar.className = 'avatar ai';
+        avatar.textContent = 'AI';
+
+        const typing = document.createElement('div');
+        typing.className = 'typing';
+        for (let i = 0; i < 3; i++) {
+            const dot = document.createElement('div');
+            dot.className = 'dot';
+            typing.appendChild(dot);
+        }
+
+        row.appendChild(avatar);
+        row.appendChild(typing);
+        chat.appendChild(row);
+        chat.scrollTop = chat.scrollHeight;
+        return row;
+    }
+
+    showWelcome();
 
     async function sendMessage() {
         const message = userInput.value.trim();
         if (!message) return;
 
-        const selectedModel = document.getElementById("modelSelect").value;
+        const selectedModel = modelSelect.value;
 
-        // USER BUBBLE
-        let userRow = document.createElement("div");
-        userRow.className = "msg-row";
+        appendMessage('user', message);
+        userInput.value = '';
 
-        let userAvatar = document.createElement("div");
-        userAvatar.className = "avatar user";
-        userAvatar.textContent = "U";
+        const typingRow = createTypingIndicator();
 
-        let userBubble = document.createElement("div");
-        userBubble.className = "msg user-msg";
-        userBubble.textContent = message;
+        try {
+            const response = await window.api.askModel({
+                message,
+                model: selectedModel
+            });
 
-        userRow.appendChild(userBubble);
-        userRow.appendChild(userAvatar);
-        chat.appendChild(userRow);
-        chat.scrollTop = chat.scrollHeight;
-
-        userInput.value = "";
-
-        // TYPING INDICATOR
-        let typingRow = document.createElement("div");
-        typingRow.className = "msg-row";
-
-        let aiAvatarTyping = document.createElement("div");
-        aiAvatarTyping.className = "avatar ai";
-        aiAvatarTyping.textContent = "AI";
-
-        let typingBubble = document.createElement("div");
-        typingBubble.className = "typing";
-        typingBubble.innerHTML = `
-            <div class="dot"></div>
-            <div class="dot"></div>
-            <div class="dot"></div>
-        `;
-
-        typingRow.appendChild(aiAvatarTyping);
-        typingRow.appendChild(typingBubble);
-        chat.appendChild(typingRow);
-        chat.scrollTop = chat.scrollHeight;
-
-        // FIRST PASS
-        console.log("Sending:", message);
-
-        const first = await window.api.askModel({
-            message,
-            model: selectedModel
-        });
-
-        console.log("Received:", first);
-
-        modelDisplay.textContent = "Model: " + first.model;
-
-        typingRow.remove();
-
-        // CHECK FOR TOOL CALL
-        const toolCall = extractToolJSON(first.text);
-
-        if (!toolCall) {
-            // NO TOOL → NORMAL ANSWER
-            let aiRow = document.createElement("div");
-            aiRow.className = "msg-row";
-
-            let aiAvatar = document.createElement("div");
-            aiAvatar.className = "avatar ai";
-            aiAvatar.textContent = "AI";
-
-            let aiBubble = document.createElement("div");
-            aiBubble.className = "msg ai-msg";
-           aiBubble.innerHTML = first.text; 
-
-            aiRow.appendChild(aiAvatar);
-            aiRow.appendChild(aiBubble);
-            chat.appendChild(aiRow);
-            chat.scrollTop = chat.scrollHeight;
-            return;
+            modelDisplay.textContent = 'Model: ' + (response.model || selectedModel);
+            typingRow.remove();
+            appendMessage('ai', response.text || 'No response received.');
+        } catch (err) {
+            typingRow.remove();
+            appendMessage(
+                'ai',
+                'Something went wrong talking to the assistant. Please try again.'
+            );
+            console.error(err);
         }
-
-        // TOOL EXECUTION
-        const toolResult = await window.api.callTool(toolCall);
-
-        // SECOND PASS
-        const second = await window.api.askModel({
-            message: JSON.stringify(toolResult),
-            model: first.model
-        });
-
-        // FINAL ANSWER
-        let aiRow = document.createElement("div");
-        aiRow.className = "msg-row";
-
-        let aiAvatar = document.createElement("div");
-        aiAvatar.className = "avatar ai";
-        aiAvatar.textContent = "AI";
-
-        let aiBubble = document.createElement("div");
-        aiBubble.className = "msg ai-msg";
-        aiBubble.innerHTML = second.text;
-        
-        aiRow.appendChild(aiAvatar);
-        aiRow.appendChild(aiBubble);
-        chat.appendChild(aiRow);
-        chat.scrollTop = chat.scrollHeight;
     }
 
-    const modelSelect =
-        document.getElementById("modelSelect");
+    modelDisplay.textContent = 'Model: ' + modelSelect.value;
 
-    modelDisplay.textContent =
-        "Model: " + modelSelect.value;
-
-    modelSelect.addEventListener("change", () => {
-        modelDisplay.textContent =
-            "Model: " + modelSelect.value;
+    modelSelect.addEventListener('change', () => {
+        modelDisplay.textContent = 'Model: ' + modelSelect.value;
     });
+
     sendBtn.addEventListener('click', sendMessage);
 
-    clearBtn.addEventListener("click", () => {
-        chat.innerHTML = `
-            <div class="msg-row">
-                <div class="avatar ai">AI</div>
-                <div class="msg ai-msg">
-                    Chat cleared.
-            </div>
-          </div>
-       `;
-    });
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            chat.replaceChildren();
+            appendMessage('ai', 'Chat cleared.');
+        });
+    }
 
-    userInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
+    userInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             sendMessage();
         }

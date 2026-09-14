@@ -1,11 +1,9 @@
 // tools.js
 
-// ⭐ Insert your REAL API keys here
 require("dotenv").config();
 
 const WEATHER_API_KEY = process.env.WEATHER_API_KEY;
 const NEWS_API_KEY = process.env.NEWS_API_KEY;
-const STOCK_API_KEY = process.env.STOCK_API_KEY;
 const SEARCH_API_KEY = process.env.SEARCH_API_KEY;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
