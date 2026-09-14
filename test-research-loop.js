@@ -480,6 +480,29 @@ async function __fetchPageTest() {
   process.exit(1);
 });
 
+// --- Locate + budget: rewrite must keep under-$10k ---
+{
+  const msg = "I need to locate a Toyota Corolla for $10k or less. Advise me and find for me.";
+  assert.strictEqual(extractBudget(msg), 10000, "extractBudget should parse $10k or less");
+  const rw = rewriteSearchQuery(msg, { wantsRecommendation: true });
+  assert.strictEqual(rw.budget, 10000);
+  const joined = rw.queries.join(" | ");
+  assert.match(joined, /under\s+10000|price under\s+10000/i, "locate rewrite must preserve budget: " + joined);
+  assert.match(rw.primary, /Corolla/i);
+  assert.match(rw.primary, /under\s+10000/i);
+  assert.ok(
+    rw.queries.some((q) => /autotrader/i.test(q) && /under\s+10000|price under/i.test(q)),
+    "autotrader query should include price under 10000: " + joined
+  );
+  assert.ok(!/mislabeled/i.test(joined));
+
+  const prompt = buildSynthesisPrompt(msg, "search", { web: [{ title: "Edmunds Corolla pricing", url: "https://www.edmunds.com/toyota/corolla/", snippet: "average price guide" }], news: null, stocks: {}, weather: null, page: null, domainPack: "pack", errors: [] }, true);
+  assert.match(prompt, /LOCATE\/FIND LISTING bans|no listings exist/i);
+  assert.match(prompt, /mislabeled year|live listing cards/i);
+  assert.match(prompt, /under \$10000|max price 10000/i);
+  assert.match(prompt, /2010.?2015 LE\/SE/i);
+}
+
 // Listing URL → search fallback query + fetch synth rules
 {
   const { listingSearchQueryFromUrl, isListingSiteUrl } = require("./tools");

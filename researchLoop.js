@@ -38,18 +38,21 @@ function extractBudget(message) {
     /\bunder\s+\$?\s*([\d,]+(?:\.\d+)?)\s*k\b/i,
     /\bbelow\s+\$?\s*([\d,]+(?:\.\d+)?)\s*k\b/i,
     /\bless\s+than\s+\$?\s*([\d,]+(?:\.\d+)?)\s*k\b/i,
+    /\bmax(?:imum)?\s+(?:price\s+)?\$?\s*([\d,]+(?:\.\d+)?)\s*k\b/i,
     /\bunder\s+\$?\s*([\d,]+(?:\.\d+)?)/i,
     /\bbelow\s+\$?\s*([\d,]+(?:\.\d+)?)/i,
     /\bless\s+than\s+\$?\s*([\d,]+(?:\.\d+)?)/i,
-    /\$\s*([\d,]+(?:\.\d+)?)/,
-    /\b([\d,]+)\s*k\s*(?:budget|max|maximum|or\s+less)?\b/i
+    /\bmax(?:imum)?\s+(?:price\s+)?\$?\s*([\d,]+(?:\.\d+)?)/i,
+    /\$\s*([\d,]+(?:\.\d+)?)\s*(?:or\s+less)?\b/,
+    /\b([\d,]+)\s*k\s*(?:budget|max|maximum|or\s+less)?\b/i,
+    /\bbudget\s+(?:of\s+|under\s+|is\s+)?\$?\s*([\d,]+(?:\.\d+)?)\s*k?\b/i
   ];
   for (const re of patterns) {
     const m = raw.match(re);
     if (!m) continue;
     let n = parseFloat(String(m[1]).replace(/,/g, ""));
     if (!Number.isFinite(n) || n <= 0) continue;
-    if (/\bk\b/i.test(m[0])) n = Math.round(n * 1000);
+    if (/k\b/i.test(m[0])) n = Math.round(n * 1000);
     if (n >= 100) return Math.round(n);
   }
   return null;
@@ -131,15 +134,31 @@ function rewriteSearchQuery(message, opts) {
 
   const queries = [];
 
-  // Locate recommended Corolla/Prius → listing search near 76177
+  // Locate recommended Corolla/Prius → listing search near 76177 (preserve budget)
   if (isLocateRecommendedVehicleAsk(raw) || isLocateRecommendedVehicleAsk(text)) {
     const modelBit =
       (text.match(/\b(prius|corollas?|corrolas?|carollas?|civics?|camrys?|accords?)\b/i) || [])[0] ||
       "Corolla";
-    const model = /prius/i.test(modelBit) ? "Prius" : /civic/i.test(modelBit) ? "Civic" : "Corolla";
-    queries.push(model + " 2010-2015 LE SE for sale Fort Worth 76177");
-    queries.push("site:autotrader.com Toyota " + model + " 2010-2015 near 76177");
-    queries.push("site:cars.com Toyota " + model + " 2010-2015 used Fort Worth");
+    const model = /prius/i.test(modelBit)
+      ? "Prius"
+      : /civic/i.test(modelBit)
+        ? "Civic"
+        : /camry/i.test(modelBit)
+          ? "Camry"
+          : /accord/i.test(modelBit)
+            ? "Accord"
+            : "Corolla";
+    const make = /civic|accord/i.test(model) ? "Honda" : "Toyota";
+    if (budget != null) {
+      // Prefer budget-preserving listing queries (under $N / price under N)
+      queries.push([make, model, "2010-2015", "under", String(budget), "Fort Worth"].join(" "));
+      queries.push("site:autotrader.com " + model + " 2010..2015 price under " + budget + " 76177");
+      queries.push("site:cars.com " + make + " " + model + " 2010-2015 under " + budget + " Fort Worth");
+    } else {
+      queries.push(model + " 2010-2015 LE SE for sale Fort Worth 76177");
+      queries.push("site:autotrader.com " + make + " " + model + " 2010-2015 near 76177");
+      queries.push("site:cars.com " + make + " " + model + " 2010-2015 used Fort Worth");
+    }
   }
 
   // Recall / NHTSA / battery follow-ups — tight factual queries first
@@ -733,6 +752,16 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
   parts.push(`- Never invent example asking prices/URLs, claim "I've tested this", "100% of listings", "100% safe", or "2010–2013 too risky" without tool evidence.`);
   parts.push(`- Year-recall ("what years" / "forgot what years") → answer 2010–2015 LE/SE from the domain pack.`);
   parts.push(`- Locate/find the recommended Corolla/Prius → the pack recommendation EXISTS (Corolla 2010–2015 LE/SE default). Never say "no specific Corolla was previously recommended." Restate pack pick + listing filters / tool links near 76177; never invent listings.`);
+  if (isLocateRecommendedVehicleAsk(message)) {
+    parts.push(`- LOCATE/FIND LISTING bans:`);
+    parts.push(`- Never conclude "no listings exist" (or equivalent scarcity) from market-average / CarGurus averages / Edmunds guide / valuation pages alone.`);
+    parts.push(`- Never invent "mislabeled year" traps, "ignore the $X listing", or "typically" dealer-fraud claims unless that exact claim appears in tool text.`);
+    parts.push(`- If search results are only guides/averages (not concrete for-sale cards with year/price/miles/link), say: tools didn't return live listing cards — give an exact Autotrader/Cars.com filter URL the user can open, and ask them to paste 2–3 listing links/cards.`);
+    parts.push(`- Prefer quoting only concrete listing titles/prices/URLs that appear in tool results. Honesty over fake scarcity — do not claim to scrape live inventory if tools cannot.`);
+    if (budget != null) {
+      parts.push(`- Budget ceiling ~$${budget}: keep listing search/advice under $${budget} / max price ${budget}.`);
+    }
+  }
   parts.push(`- If sources are thin/spammy, still advise like a decisive courier-aware local using solid US used-car knowledge. Do not apologize about tools.`);
   parts.push(`- Ban nonsense: do NOT call mainstream US-market cars (Honda, Toyota, Hyundai, Kia, etc.) "foreign imports to avoid." Judge reliability, parts cost, MPG.`);
   parts.push(`- No raw JSON. Short structured sections.`);
