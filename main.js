@@ -10,6 +10,24 @@ const {
 const { routeMessage } = require("./router");
 const { runResearchLoop, planTools, formatNewsResults } = require("./researchLoop");
 const sessionLog = require("./sessionLog");
+const { createDurableMemory } = require("./durableMemory");
+
+/** Durable facts across sessions (userData/memory.json). */
+let durableMemory = null;
+
+function getDurableMemory() {
+  if (!durableMemory) {
+    durableMemory = createDurableMemory(() => {
+      try {
+        return app.getPath("userData");
+      } catch (_) {
+        return path.join(__dirname, ".memory");
+      }
+    });
+  }
+  return durableMemory;
+}
+
 
 const SYSTEM_PROMPT = `You are AIPickVault Desktop — a research assistant by Blake Mauldin in Fort Worth, Texas.
 
@@ -18,14 +36,21 @@ Identity
 - Never claim to be Grok, ChatGPT, Claude, or any other product.
 - Never say you are Qwen, Llama, Ollama, or name the underlying engine unless the user explicitly asks how you run.
 
+Reasoning (Grok-like, as far as local models allow)
+- Think through tradeoffs before answering. Challenge weak or irrelevant sources.
+- Prefer a coherent, decisive recommendation over tool-meta, apologies, or "I couldn't find…".
+- When advising Blake: he does last-mile gig delivery (DoorDash / Uber / similar), often high miles, city stop-go, cargo — Fort Worth / Alliance (76177). Use durable memory facts when present.
+- For cars and gear: rank by overall annual cost, reliability, and maintenance for HIS use — not badge prestige.
+- Never invent URLs, live prices, or fake AAA/insurance statistics.
+- Never label mainstream US-market cars as "foreign imports to avoid."
+
 Style
 - Be direct and specific. No filler, no throat-clearing, no "Great question!" or "I'd be happy to help".
 - Lead with the answer. Keep prose tight.
-- Admit uncertainty. Prefer "I don't know" or "the data doesn't show X" over guessing.
-- Never invent live prices, headlines, weather numbers, or news. If tool/data is missing, say so.
-- When tool results or source lists are provided, use them and cite titles with links. Do not dump raw JSON.
+- Admit uncertainty with precision; do not hide behind tool failures.
+- When tool results or source lists are provided, use the useful ones and cite titles with links. Discard app-store / wrong-country spam mentally.
 - Prefer structured answers for stocks, weather, and research (clear headings/sections).
-- For follow-ups, use prior conversation context; resolve pronouns from history when obvious.`;
+- For follow-ups, use prior conversation context and durable memory; resolve pronouns when obvious.`;
 
 /** Max user+assistant messages retained (oldest dropped first). */
 const MAX_HISTORY_MESSAGES = 16;
@@ -184,14 +209,16 @@ function friendlyOllamaError(err, model) {
  * @param {(delta: string) => void} [onChunk]
  * @returns {Promise<string>}
  */
-async function askOllamaMessages(messages, model = "qwen3:30b", onChunk) {
+async function askOllamaMessages(messages, model = "qwen3:30b", onChunk, opts) {
   const payloadMessages = Array.isArray(messages) ? messages : [];
+  const think = !!(opts && opts.think);
   console.log(
     "OLLAMA_MESSAGES:",
     payloadMessages.length,
     "(history turns:",
     memoryTurnCount(),
-    ")"
+    ")",
+    think ? "[think]" : ""
   );
 
   let response;
@@ -204,7 +231,8 @@ async function askOllamaMessages(messages, model = "qwen3:30b", onChunk) {
       body: JSON.stringify({
         model,
         stream: true,
-        messages: payloadMessages
+        messages: payloadMessages,
+        ...(think ? { think: true } : {})
       })
     });
   } catch (err) {
@@ -277,6 +305,10 @@ async function askOllamaMessages(messages, model = "qwen3:30b", onChunk) {
         break;
       }
 
+      // Thinking stays off the UI; only final content streams to the user
+      if (obj.message && typeof obj.message.thinking === "string" && obj.message.thinking) {
+        /* accumulate silently for quality; do not onChunk */
+      }
       const delta = obj.message && obj.message.content;
       if (typeof delta === "string" && delta.length > 0) {
         full += delta;
@@ -330,14 +362,16 @@ async function askOllamaMessages(messages, model = "qwen3:30b", onChunk) {
  */
 async function askOllama(prompt, model = "qwen3:30b", onChunk, opts) {
   const includeHistory = !opts || opts.includeHistory !== false;
-  const messages = [{ role: "system", content: SYSTEM_PROMPT }];
+  const think = !!(opts && opts.think);
+  const memSuffix = getDurableMemory().buildSystemSuffix();
+  const messages = [{ role: "system", content: SYSTEM_PROMPT + memSuffix }];
   if (includeHistory && conversationHistory.length) {
     for (const m of conversationHistory) {
       messages.push({ role: m.role, content: m.content });
     }
   }
   messages.push({ role: "user", content: String(prompt || "") });
-  return askOllamaMessages(messages, model, onChunk);
+  return askOllamaMessages(messages, model, onChunk, { think });
 }
 
 /** Parse a complete NDJSON body (used when stream reader unavailable). */
@@ -413,13 +447,15 @@ function toolFns() {
 }
 
 async function runRoutedResearch(message, model, route, stream) {
+  const useThink = /^qwen3/i.test(String(model || ""));
   const loopResult = await runResearchLoop({
     message,
     route,
     model,
     stream,
     askOllama,
-    tools: toolFns()
+    tools: toolFns(),
+    think: useThink
   });
 
   const text = loopResult.text || "No response received.";
@@ -575,6 +611,15 @@ ipcMain.handle("ask-model", async (event, data) => {
 
     sessionLog.prompt(message);
 
+    try {
+      const learned = getDurableMemory().learnFromUserMessage(message);
+      if (learned && learned.learned && learned.learned.length) {
+        sessionLog.info("MEMORY_LEARN", learned.learned.join(", "));
+      }
+    } catch (memErr) {
+      console.error("durable memory learn error:", memErr);
+    }
+
     let route = routeMessage(message);
     route = maybePreferChatHistory(message, route);
     console.log("ROUTE:", JSON.stringify(route));
@@ -652,6 +697,9 @@ ipcMain.handle("ask-model", async (event, data) => {
 });
 
 app.whenReady().then(() => {
+  durableMemory = createDurableMemory(() => app.getPath("userData"));
+  console.log("Durable memory ->", durableMemory.memoryPath());
+  sessionLog.info("DURABLE_MEMORY", durableMemory.memoryPath());
   const logPath = sessionLog.getLogPath();
   sessionLog.info("APP_START", "session log -> " + logPath);
   console.log("AIPickVault Desktop session log:", logPath);

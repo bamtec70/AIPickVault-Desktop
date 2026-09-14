@@ -4,223 +4,242 @@
  * Multi-step research agent loop for AIPickVault Desktop.
  *
  * planTools(route, message) -> ordered steps (1–3)
- * runResearchLoop(...)      -> execute tools (sequential / limited parallel)
- *                            -> stream progress notes
- *                            -> synthesize one cited answer via Ollama
- *
- * Chat intents should skip this loop (empty plan).
+ * runResearchLoop(...)      -> execute tools → synthesize cited answer
  */
 
 const MAX_STEPS = 3;
 
-/** Stopwords stripped when rewriting long questions into search keywords. */
-const QUERY_STOPWORDS = new Set([
-  "a", "an", "the", "to", "for", "of", "in", "on", "at", "by", "with", "from",
-  "is", "are", "was", "were", "be", "been", "being", "am", "do", "does", "did",
-  "that", "thats", "that's", "this", "these", "those", "it", "its", "it's",
-  "i", "me", "my", "we", "our", "you", "your", "he", "she", "they", "them",
-  "what", "whats", "what's", "which", "who", "whom", "whose", "where", "when",
-  "why", "how", "can", "could", "would", "should", "will", "shall", "may",
-  "might", "must", "need", "use", "using", "used", "get", "got", "have", "has",
-  "had", "and", "or", "but", "if", "then", "than", "so", "as", "into", "about",
-  "there", "here", "just", "also", "really", "very", "please", "tell", "give",
-  "find", "show", "some", "any", "all", "each", "every", "both", "few", "more",
-  "most", "other", "such", "only", "own", "same", "too", "s", "t", "ve",
-  "re", "ll", "d", "m"
-]);
+const PREFERRED_RESEARCH_HOSTS = [
+  "edmunds.com", "kbb.com", "consumerreports.org", "repairpal.com",
+  "fuelly.com", "fueleconomy.gov", "reddit.com", "cars.com",
+  "cargurus.com", "autotrader.com", "carvana.com", "iihs.org",
+  "nhtsa.gov", "yourmechanic.com", "aaa.com", "bankrate.com", "nerdwallet.com"
+];
+
+const DEMOTED_RESEARCH_HOSTS = [
+  "play.google.com", "apps.apple.com", "appstore", "apkpure",
+  "apkcombo", "uptodown.com", "softonic.com", "download.", "getapp.com"
+];
+
+function extractBudget(message) {
+  const raw = String(message || "");
+  const patterns = [
+    /\$\s*([\d,]+(?:\.\d+)?)\s*k\b/i,
+    /\bunder\s+\$?\s*([\d,]+(?:\.\d+)?)\s*k\b/i,
+    /\bbelow\s+\$?\s*([\d,]+(?:\.\d+)?)\s*k\b/i,
+    /\bless\s+than\s+\$?\s*([\d,]+(?:\.\d+)?)\s*k\b/i,
+    /\bunder\s+\$?\s*([\d,]+(?:\.\d+)?)/i,
+    /\bbelow\s+\$?\s*([\d,]+(?:\.\d+)?)/i,
+    /\bless\s+than\s+\$?\s*([\d,]+(?:\.\d+)?)/i,
+    /\$\s*([\d,]+(?:\.\d+)?)/,
+    /\b([\d,]+)\s*k\s*(?:budget|max|maximum|or\s+less)?\b/i
+  ];
+  for (const re of patterns) {
+    const m = raw.match(re);
+    if (!m) continue;
+    let n = parseFloat(String(m[1]).replace(/,/g, ""));
+    if (!Number.isFinite(n) || n <= 0) continue;
+    if (/\bk\b/i.test(m[0])) n = Math.round(n * 1000);
+    if (n >= 100) return Math.round(n);
+  }
+  return null;
+}
+
+function extractGigUseCase(message) {
+  const lower = String(message || "").toLowerCase();
+  const platforms = [];
+  if (/\bdoordash\b|\bdoor\s*dash\b/.test(lower)) platforms.push("DoorDash");
+  if (/\buber\s*eats\b/.test(lower)) platforms.push("Uber Eats");
+  else if (/\buber\b/.test(lower)) platforms.push("Uber");
+  if (/\broadie\b/.test(lower)) platforms.push("Roadie");
+  if (/\binstacart\b/.test(lower)) platforms.push("Instacart");
+  if (/\bgrubhub\b/.test(lower)) platforms.push("Grubhub");
+  if (/\bamazon\s+flex\b/.test(lower)) platforms.push("Amazon Flex");
+  const isGig =
+    platforms.length > 0 ||
+    /\b(gig\s+delivery|last\s*mile|food\s+delivery|courier|rideshare|ride[\s-]?share)\b/.test(lower);
+  return {
+    isGig,
+    platforms,
+    label: platforms.length ? platforms.join(" ") : isGig ? "gig delivery" : null
+  };
+}
+
+function extractCriteria(message) {
+  const lower = String(message || "").toLowerCase();
+  return {
+    annualCost: /\b(annual\s+cost|cost\s+of\s+ownership|overall\s+(?:annual\s+)?cost|running\s+cost|cost\s+to\s+run|tco)\b/.test(lower),
+    reliability: /\breliab/.test(lower),
+    maintenance: /\b(maintenance|repair|parts)\b/.test(lower),
+    fuel: /\b(fuel|mpg|gas\s+mile|mileage|efficiency)\b/.test(lower),
+    insurance: /\binsurance\b/.test(lower),
+    tires: /\btires?\b/.test(lower)
+  };
+}
+
+function hasCostReliabilityLanguage(message) {
+  const c = extractCriteria(message);
+  return c.annualCost || c.reliability || c.maintenance || c.fuel || c.insurance || c.tires;
+}
+
+function isVehicleAsk(message) {
+  return /\b(car|truck|suv|vehicle|hybrid|sedan|hatchback|minivan|civic|corolla|prius|cargo\s+van|van)\b/i.test(
+    String(message || "")
+  );
+}
 
 /**
- * Turn a long natural-language question into 1–2 tight keyword queries.
- * Never pass a raw essay to SerpAPI when the ask is recommendation/how-to.
- *
- * @param {string} message
- * @param {{ wantsRecommendation?: boolean }} [opts]
- * @returns {{ primary: string, alternate: string|null, rewritten: boolean }}
+ * Intent-based rewrite — NOT naive stopword deletion.
+ * Emits 2–3 tight US-focused queries when recommendation + gig/budget.
  */
 function rewriteSearchQuery(message, opts) {
   const wantsRec = !!(opts && opts.wantsRecommendation);
   const raw = String(message || "").trim();
-  if (!raw) return { primary: "", alternate: null, rewritten: false };
+  if (!raw) {
+    return {
+      primary: "", alternate: null, tertiary: null, queries: [],
+      rewritten: false, budget: null,
+      gig: { isGig: false, platforms: [], label: null },
+      criteria: extractCriteria("")
+    };
+  }
 
-  // Strip leading search verbs so "search for X" stays "X"
   let text = raw
     .replace(/^(search\s+for|search|look\s*up|lookup|find|google)\s+/i, "")
     .trim();
 
-  // Normalize currency / budget phrases before tokenization
-  text = text
-    .replace(/\$\s*([\d,]+(?:\.\d+)?)\s*k\b/gi, (m, n) => `under ${n}000`)
-    .replace(/\$\s*([\d,]+(?:\.\d+)?)/g, "$$$1")
-    .replace(/\bunder\s+\$?\s*([\d,]+)/gi, "under $1")
-    .replace(/\bbelow\s+\$?\s*([\d,]+)/gi, "under $1")
-    .replace(/\bless\s+than\s+\$?\s*([\d,]+)/gi, "under $1")
-    .replace(/\b(?:usd|dollars?)\b/gi, "")
-    .replace(/[?!.,;:]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const budget = extractBudget(text);
+  const gig = extractGigUseCase(text);
+  const criteria = extractCriteria(text);
+  const vehicle = isVehicleAsk(text);
+  const budgetPhrase = budget != null ? `under ${budget}` : null;
 
-  const tokens = text.split(/\s+/).filter(Boolean);
-  const kept = [];
-  for (const tok of tokens) {
-    const bare = tok.replace(/^[^a-zA-Z0-9$]+|[^a-zA-Z0-9$]+$/g, "");
-    if (!bare) continue;
-    const lower = bare.toLowerCase();
-    // Keep budget markers and numbers
-    if (/^\$?\d[\d,]*k?$/i.test(bare) || /^under$/i.test(bare)) {
-      kept.push(bare.replace(/,/g, ""));
-      continue;
-    }
-    if (QUERY_STOPWORDS.has(lower)) continue;
-    if (bare.length >= 2) kept.push(bare);
-  }
-
-  // Dedupe consecutive duplicates (case-insensitive)
-  const deduped = [];
-  for (const t of kept) {
-    if (
-      deduped.length &&
-      deduped[deduped.length - 1].toLowerCase() === t.toLowerCase()
-    ) {
-      continue;
-    }
-    deduped.push(t);
-  }
-
-  let primary = deduped.join(" ").trim();
-  if (!primary) primary = raw.slice(0, 120);
-
-  // Cap length — SerpAPI likes short queries
-  if (primary.split(/\s+/).length > 12) {
-    primary = primary.split(/\s+/).slice(0, 12).join(" ");
-  }
-
-  const lowerRaw = raw.toLowerCase();
   const looksLikeEssay =
     raw.length > 60 ||
-    /\b(what(?:'s| is)|which|how (?:do|to|can)|should i)\b/i.test(raw) ||
+    /\b(what(?:'s| is)|which|how (?:do|to|can)|should i|i need|i'?m looking)\b/i.test(raw) ||
     wantsRec;
 
-  let alternate = null;
-  if (wantsRec || looksLikeEssay) {
-    if (
-      /\b(car|truck|suv|vehicle|hybrid|sedan|doordash|uber\s*eats|gig|delivery)\b/i.test(
-        lowerRaw
-      )
-    ) {
-      const budget =
-        (primary.match(/\bunder\s+\$?\d[\d,]*/i) || [])[0] ||
-        (primary.match(/\$\d[\d,]*/i) || [])[0] ||
-        "";
-      alternate = ["reliable", "cheap", "used", "gig", "delivery", "cars"]
-        .concat(budget ? [budget.replace(/\s+/g, " ")] : [])
-        .join(" ")
-        .trim();
-    } else if (/\b(laptop|phone|headphones?|tv|camera|router)\b/i.test(lowerRaw)) {
-      alternate = primary
-        .replace(/\bbest\b/i, "reliable budget")
-        .slice(0, 100);
-      if (alternate.toLowerCase() === primary.toLowerCase()) {
-        alternate = `reliable affordable ${primary}`.slice(0, 100);
-      }
-    } else if (wantsRec) {
-      alternate = `best options ${primary}`.slice(0, 100);
-      if (alternate.toLowerCase() === primary.toLowerCase()) {
-        alternate = null;
-      }
+  const queries = [];
+
+  if ((wantsRec || looksLikeEssay) && (vehicle || gig.isGig)) {
+    const platformBit =
+      gig.label && (gig.label.includes("DoorDash") || gig.label.includes("Uber"))
+        ? "DoorDash Uber"
+        : gig.label || "DoorDash Uber";
+    queries.push(
+      ["best used cars for", platformBit, budgetPhrase || "cheap"].filter(Boolean).join(" ")
+    );
+    queries.push("highest mileage reliable used cars low maintenance cost");
+    if (criteria.annualCost || criteria.fuel || criteria.insurance || wantsRec) {
+      queries.push("used car cost of ownership fuel insurance maintenance delivery driver");
+    } else {
+      queries.push(["reliable cheap used gig delivery cars", budgetPhrase].filter(Boolean).join(" "));
     }
+  } else if ((wantsRec || looksLikeEssay) && /\b(laptop|phone|headphones?|tv|camera|router)\b/i.test(text)) {
+    const product = (text.match(/\b(laptop|phone|headphones?|tv|camera|router)\b/i) || [])[0] || "product";
+    queries.push(["best", "budget", product, budgetPhrase, "US"].filter(Boolean).join(" "));
+    queries.push(`reliable affordable used ${product} reviews`);
+    if (budgetPhrase) queries.push(`${product} under ${budget} cost of ownership`);
+  } else if (wantsRec || looksLikeEssay) {
+    const drop = /^(since|drive|looking|know|need|want|thats|that|this|with|from|have|has|been|were|into|about|other|along|overall|platforms|vehicle|the|and|for|are|but|not|you|all|can|was|one|our|out|get|how|new|now|old|see|two|way|who|any|ask|big|few|got|had|may|own|try|just|like|make|more|only|over|some|than|them|then|what|when|will|your|also|really|very|please|tell|give|find|show|each|every|both|most|such|same|too|should|would|could|shall|might|must|using|used|im|i)$/i;
+    const nounish = text
+      .replace(/[?!.,;:]+/g, " ")
+      .split(/\s+/)
+      .filter((tok) => {
+        const lower = tok.toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, "");
+        if (!lower || lower.length < 3) return false;
+        if (drop.test(lower)) return false;
+        return /^[a-zA-Z]/.test(lower);
+      })
+      .slice(0, 8);
+    const primaryGeneric = [( /\bbest\b/i.test(text) ? "best" : null), ...nounish, budgetPhrase]
+      .filter(Boolean).join(" ").trim();
+    queries.push(primaryGeneric || text.slice(0, 80));
+    if (wantsRec) queries.push(`best options ${primaryGeneric || text.slice(0, 60)}`.slice(0, 100));
+  } else {
+    queries.push(text.replace(/[?!.,;:]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 100));
   }
 
-  const rewritten =
-    looksLikeEssay ||
-    primary.toLowerCase() !== raw.toLowerCase() ||
-    !!alternate;
-
-  // Prefer adding "used" for budget car recs when missing
-  if (
-    wantsRec &&
-    /\b(car|truck|suv|vehicle)\b/i.test(primary) &&
-    /\bunder\b|\$\d/i.test(primary) &&
-    !/\bused\b/i.test(primary)
-  ) {
-    primary = primary.replace(/\b(cars?|trucks?|suvs?|vehicles?)\b/i, (m) => `used ${m}`);
+  const seen = new Set();
+  const deduped = [];
+  for (let q of queries) {
+    q = String(q || "").replace(/\s+/g, " ").trim();
+    if (!q) continue;
+    if (q.split(/\s+/).length > 14) q = q.split(/\s+/).slice(0, 14).join(" ");
+    const key = q.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(q);
   }
+  if (!deduped.length) deduped.push(raw.slice(0, 100));
 
-  // Ensure "best" stays for recommendation searches when present in original
-  if (wantsRec && /\bbest\b/i.test(lowerRaw) && !/\bbest\b/i.test(primary)) {
-    primary = `best ${primary}`.trim();
-  }
-
-  return { primary: primary.trim(), alternate, rewritten };
+  return {
+    primary: deduped[0],
+    alternate: deduped[1] || null,
+    tertiary: deduped[2] || null,
+    queries: deduped,
+    rewritten: looksLikeEssay || deduped[0].toLowerCase() !== raw.toLowerCase() || !!deduped[1],
+    budget,
+    gig,
+    criteria
+  };
 }
 
-/**
- * Rewrite a news topic the same way (tight keywords, not the essay).
- */
 function rewriteNewsTopic(topic) {
-  const { primary } = rewriteSearchQuery(String(topic || ""), {
-    wantsRecommendation: false
-  });
+  const { primary } = rewriteSearchQuery(String(topic || ""), { wantsRecommendation: false });
   return primary || String(topic || "").trim();
 }
 
-/**
- * Heuristic: first web results are thin or off-topic vs the ask.
- */
+function scoreWebResultForSynth(result) {
+  const link = String((result && (result.link || result.url)) || "").toLowerCase();
+  const title = String((result && result.title) || "").toLowerCase();
+  const snippet = String((result && result.snippet) || "").toLowerCase();
+  const blob = `${link} ${title} ${snippet}`;
+  let score = 0;
+  for (const host of PREFERRED_RESEARCH_HOSTS) {
+    if (link.includes(host)) { score += 8; break; }
+  }
+  if (/reddit\.com\/r\/(doordash|uber|couriers|gigworkers|cars|whatcarshouldibuy)/i.test(link)) score += 4;
+  for (const bad of DEMOTED_RESEARCH_HOSTS) {
+    if (link.includes(bad) || title.includes(bad)) { score -= 12; break; }
+  }
+  if (/\b(uae|dubai|india apk|play store|app store|download apk)\b/i.test(blob)) score -= 10;
+  if (/\b(toyota|honda|corolla|civic|prius|camry|accord|used car|mpg|reliability|maintenance|ownership)\b/i.test(blob)) score += 3;
+  if (/\b(doordash|uber|gig|delivery driver)\b/i.test(blob)) score += 2;
+  return score;
+}
+
+function rankWebResultsForSynth(results) {
+  if (!Array.isArray(results) || !results.length) return results || [];
+  return results
+    .map((r, i) => ({ r, i, s: scoreWebResultForSynth(r) }))
+    .sort((a, b) => b.s - a.s || a.i - b.i)
+    .map((x) => x.r);
+}
+
 function resultsSeemThinOrOffTopic(webResults, message, query) {
   if (!Array.isArray(webResults) || webResults.length === 0) return true;
   if (webResults.length < 3) return true;
-
   const lowerMsg = String(message || "").toLowerCase();
   const constraintHints = [];
-  const budget =
-    lowerMsg.match(/\bunder\s+\$?\s*([\d,]+)/i) || lowerMsg.match(/\$\s*([\d,]+)/);
-  if (budget) constraintHints.push(budget[1].replace(/,/g, ""));
-  if (/\bdoordash\b/i.test(lowerMsg)) {
-    constraintHints.push("doordash", "door dash", "delivery");
-  }
-  if (/\buber\s*eats\b/i.test(lowerMsg)) {
-    constraintHints.push("uber", "eats", "delivery");
-  }
+  const budget = extractBudget(lowerMsg);
+  if (budget) constraintHints.push(String(budget), "under");
+  if (/\bdoordash\b/i.test(lowerMsg)) constraintHints.push("doordash", "delivery");
+  if (/\buber\b/i.test(lowerMsg)) constraintHints.push("uber", "delivery");
   if (/\b(car|truck|suv|vehicle)\b/i.test(lowerMsg)) {
-    constraintHints.push(
-      "car",
-      "cars",
-      "vehicle",
-      "used",
-      "toyota",
-      "honda",
-      "ford",
-      "hybrid"
-    );
+    constraintHints.push("car", "cars", "vehicle", "used", "toyota", "honda", "ford", "hybrid");
   }
-
+  const blob = webResults.map((r) => `${r.title || ""} ${r.snippet || ""} ${(r.link || r.url || "")}`).join(" ").toLowerCase();
+  const spamHits = webResults.filter((r) => scoreWebResultForSynth(r) < -5).length;
+  if (spamHits >= Math.ceil(webResults.length * 0.6)) return true;
   if (constraintHints.length === 0) {
-    const qWords = String(query || "")
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((w) => w.length > 3 && !QUERY_STOPWORDS.has(w));
-    if (qWords.length === 0) return false;
-    const blob = webResults
-      .map((r) => `${r.title || ""} ${r.snippet || ""}`)
-      .join(" ")
-      .toLowerCase();
-    const hits = qWords.filter((w) => blob.includes(w)).length;
-    return hits < Math.min(2, qWords.length);
+    const qWords = String(query || "").toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+    if (!qWords.length) return false;
+    return qWords.filter((w) => blob.includes(w)).length < Math.min(2, qWords.length);
   }
-
-  const blob = webResults
-    .map((r) => `${r.title || ""} ${r.snippet || ""}`)
-    .join(" ")
-    .toLowerCase();
-
   const luxuryNoise =
-    /\b(highlander|lexus|es\s*300|mercedes|bmw|cadillac|range rover)\b/i.test(
-      blob
-    ) &&
-    !/\bunder\s*\$?\s*10|\$\s*[1-9]\d{3}\b|\bcheap\b|\bbudget\b|\bused\b/i.test(
-      blob
-    );
-
+    /\b(highlander|lexus|es\s*300|mercedes|bmw|cadillac|range rover)\b/i.test(blob) &&
+    !/\bunder\s*\$?\s*10|\$\s*[1-9]\d{3}\b|\bcheap\b|\bbudget\b|\bused\b/i.test(blob);
   let topicHits = 0;
   for (const h of constraintHints) {
     if (blob.includes(String(h).toLowerCase())) topicHits += 1;
@@ -230,12 +249,6 @@ function resultsSeemThinOrOffTopic(webResults, message, query) {
   return false;
 }
 
-/**
- * Build 1–3 tool steps from the deterministic router payload.
- * @param {{ intent: string, payload?: object }} route
- * @param {string} message
- * @returns {Array<{ id: string, tool: string, label: string, args: object, parallelGroup?: string }>}
- */
 function planTools(route, message) {
   const intent = route && route.intent ? route.intent : "chat";
   const payload = (route && route.payload) || {};
@@ -247,125 +260,91 @@ function planTools(route, message) {
   if (intent === "chat") return [];
 
   if (intent === "weather") {
-    steps.push({
-      id: "weather",
-      tool: "weather",
-      label: "Weather",
-      args: { location: payload.location || "Fort Worth" }
-    });
+    steps.push({ id: "weather", tool: "weather", label: "Weather", args: { location: payload.location || "Fort Worth" } });
     return steps.slice(0, MAX_STEPS);
   }
 
   if (intent === "news") {
-    const topic = rewriteNewsTopic(payload.topic || "technology");
-    steps.push({
-      id: "news",
-      tool: "news",
-      label: "News",
-      args: { topic }
-    });
+    steps.push({ id: "news", tool: "news", label: "News", args: { topic: rewriteNewsTopic(payload.topic || "technology") } });
     return steps.slice(0, MAX_STEPS);
   }
 
   if (intent === "search") {
     const rawQuery = payload.query || text;
-    const rewritten = rewriteSearchQuery(rawQuery, {
-      wantsRecommendation: wantsRec
-    });
-    const primary = rewritten.primary || rawQuery;
-    const alternate = rewritten.alternate;
+    const rewritten = rewriteSearchQuery(rawQuery, { wantsRecommendation: wantsRec });
+    const queryList = rewritten.queries.length ? rewritten.queries.slice() : [rewritten.primary || rawQuery];
+    const costRel = hasCostReliabilityLanguage(rawQuery) || hasCostReliabilityLanguage(text);
+    const multiAngle = wantsRec && (costRel || rewritten.gig.isGig || isVehicleAsk(rawQuery));
 
     if (toolsHint.includes("search") || toolsHint.length === 0) {
+      const primary = queryList[0] || rawQuery;
       steps.push({
-        id: "search",
-        tool: "search",
-        label: "Web search",
+        id: "search", tool: "search", label: "Web search",
         args: { query: primary },
-        queryMeta: {
-          original: rawQuery,
-          rewritten: primary,
-          wasRewritten: rewritten.rewritten
-        }
+        queryMeta: { original: rawQuery, rewritten: primary, wasRewritten: rewritten.rewritten }
       });
     }
 
-    // Recommendations: always plan ≥2 steps (refined second search, and/or news)
     if (wantsRec && steps.some((s) => s.tool === "search")) {
-      const secondQ =
-        alternate ||
-        rewriteSearchQuery(`reliable affordable ${primary}`, {
-          wantsRecommendation: true
-        }).primary;
-      if (secondQ && secondQ.toLowerCase() !== primary.toLowerCase()) {
+      const secondQ = queryList[1] || rewritten.alternate;
+      if (secondQ && secondQ.toLowerCase() !== String(steps[0].args.query).toLowerCase()) {
         steps.push({
-          id: "search2",
-          tool: "search",
-          label: "Web search (refined)",
-          args: { query: secondQ },
-          mergeWeb: true,
-          queryMeta: {
-            original: rawQuery,
-            rewritten: secondQ,
-            wasRewritten: true
-          }
+          id: "search2", tool: "search", label: "Web search (reliability)",
+          args: { query: secondQ }, mergeWeb: true,
+          queryMeta: { original: rawQuery, rewritten: secondQ, wasRewritten: true }
         });
+      }
+      if (multiAngle && steps.length < MAX_STEPS) {
+        const thirdQ = queryList[2] || rewritten.tertiary;
+        if (thirdQ && !steps.some((s) => s.tool === "search" && String(s.args.query).toLowerCase() === thirdQ.toLowerCase())) {
+          steps.push({
+            id: "search3", tool: "search", label: "Web search (ownership cost)",
+            args: { query: thirdQ }, mergeWeb: true,
+            queryMeta: { original: rawQuery, rewritten: thirdQ, wasRewritten: true }
+          });
+        } else if (!toolsHint.includes("news") && steps.length < MAX_STEPS) {
+          steps.push({
+            id: "news", tool: "news", label: "News",
+            args: { topic: rewriteNewsTopic(rewritten.gig.isGig ? "used cars gig delivery drivers US" : secondQ || queryList[0]) },
+            refineFrom: "search"
+          });
+        }
       }
     }
 
-    if (toolsHint.includes("news")) {
-      const newsTopicBase = rewriteNewsTopic(
-        alternate && wantsRec ? alternate : primary
-      );
+    if (toolsHint.includes("news") && !steps.some((s) => s.tool === "news") && steps.length < MAX_STEPS) {
       steps.push({
-        id: "news",
-        tool: "news",
-        label: "News",
-        args: { topic: newsTopicBase },
+        id: "news", tool: "news", label: "News",
+        args: { topic: rewriteNewsTopic(rewritten.alternate && wantsRec ? rewritten.alternate : queryList[0]) },
         refineFrom: "search"
       });
     }
 
-    // If recommendation still only has 1 step, force a second search
-    if (wantsRec && steps.length < 2 && steps.some((s) => s.tool === "search")) {
-      const fallbackQ = alternate || `best options ${primary}`.slice(0, 100);
+    const minSteps = multiAngle ? 3 : wantsRec ? 2 : 1;
+    while (wantsRec && steps.length < minSteps && steps.length < MAX_STEPS && steps.some((s) => s.tool === "search")) {
+      const fallbackQ =
+        queryList[steps.filter((s) => s.tool === "search").length] ||
+        rewritten.alternate ||
+        `best options ${queryList[0]}`.slice(0, 100);
+      if (!fallbackQ || steps.some((s) => s.tool === "search" && String(s.args.query).toLowerCase() === fallbackQ.toLowerCase())) break;
       steps.push({
-        id: "search2",
-        tool: "search",
-        label: "Web search (refined)",
-        args: { query: fallbackQ },
-        mergeWeb: true
+        id: `search${steps.filter((s) => s.tool === "search").length + 1}`,
+        tool: "search", label: "Web search (refined)",
+        args: { query: fallbackQ }, mergeWeb: true
       });
     }
 
-    // Optional finance when the research query names a known ticker/company
-    if (toolsHint.includes("stock") || payload.optionalSymbol) {
-      steps.push({
-        id: "stock",
-        tool: "stock",
-        label: "Finance",
-        args: { symbol: payload.optionalSymbol || payload.symbol }
-      });
+    if ((toolsHint.includes("stock") || payload.optionalSymbol) && steps.length < MAX_STEPS) {
+      steps.push({ id: "stock", tool: "stock", label: "Finance", args: { symbol: payload.optionalSymbol || payload.symbol } });
     }
     return steps.slice(0, MAX_STEPS);
   }
 
   if (intent === "stock") {
     const symbol = payload.symbol;
-    if (symbol) {
-      steps.push({
-        id: "stock",
-        tool: "stock",
-        label: "Finance",
-        args: { symbol }
-      });
-    }
+    if (symbol) steps.push({ id: "stock", tool: "stock", label: "Finance", args: { symbol } });
     if (toolsHint.includes("news") || symbol) {
-      steps.push({
-        id: "news",
-        tool: "news",
-        label: "News",
-        args: { topic: symbol || rewriteNewsTopic(text) }
-      });
+      steps.push({ id: "news", tool: "news", label: "News", args: { topic: symbol || rewriteNewsTopic(text) } });
     }
     return steps.slice(0, MAX_STEPS);
   }
@@ -373,32 +352,9 @@ function planTools(route, message) {
   if (intent === "stock_compare") {
     const symbols = Array.isArray(payload.symbols) ? payload.symbols : [];
     const [s1, s2] = symbols;
-    if (s1) {
-      steps.push({
-        id: "stock1",
-        tool: "stock",
-        label: `Finance (${s1})`,
-        args: { symbol: s1 },
-        parallelGroup: "quotes"
-      });
-    }
-    if (s2) {
-      steps.push({
-        id: "stock2",
-        tool: "stock",
-        label: `Finance (${s2})`,
-        args: { symbol: s2 },
-        parallelGroup: "quotes"
-      });
-    }
-    if (s1 && s2) {
-      steps.push({
-        id: "news",
-        tool: "news",
-        label: "News",
-        args: { topic: `${s1} ${s2}` }
-      });
-    }
+    if (s1) steps.push({ id: "stock1", tool: "stock", label: `Finance (${s1})`, args: { symbol: s1 }, parallelGroup: "quotes" });
+    if (s2) steps.push({ id: "stock2", tool: "stock", label: `Finance (${s2})`, args: { symbol: s2 }, parallelGroup: "quotes" });
+    if (s1 && s2) steps.push({ id: "news", tool: "news", label: "News", args: { topic: `${s1} ${s2}` } });
     return steps.slice(0, MAX_STEPS);
   }
 
@@ -407,26 +363,22 @@ function planTools(route, message) {
 
 function formatWebResults(results) {
   if (!Array.isArray(results) || results.length === 0) return "(none)";
-  return results
-    .map((r, i) => {
-      const title = r.title || "Untitled";
-      const link = r.link || r.url || "";
-      const snippet = r.snippet || "";
-      return `${i + 1}. ${title}\n   Link: ${link}\n   Snippet: ${snippet}`;
-    })
-    .join("\n\n");
+  return results.map((r, i) => {
+    const title = r.title || "Untitled";
+    const link = r.link || r.url || "";
+    const snippet = r.snippet || "";
+    return `${i + 1}. ${title}\n   Link: ${link}\n   Snippet: ${snippet}`;
+  }).join("\n\n");
 }
 
 function formatNewsResults(news) {
   if (!Array.isArray(news) || news.length === 0) return "(none)";
-  return news
-    .map((a, i) => {
-      const title = a.title || "Untitled";
-      const source = a.source || "";
-      const url = a.url || a.link || "";
-      return `${i + 1}. ${title}\n   Source: ${source}\n   Link: ${url}`;
-    })
-    .join("\n\n");
+  return news.map((a, i) => {
+    const title = a.title || "Untitled";
+    const source = a.source || "";
+    const url = a.url || a.link || "";
+    return `${i + 1}. ${title}\n   Source: ${source}\n   Link: ${url}`;
+  }).join("\n\n");
 }
 
 function isToolError(result) {
@@ -436,25 +388,16 @@ function isToolError(result) {
 }
 
 function asList(result) {
-  if (Array.isArray(result)) return result;
-  return [];
+  return Array.isArray(result) ? result : [];
 }
 
-/**
- * Heuristic: refine a news topic from web titles when useful.
- * Never invents URLs — only reuses words from titles / original query.
- */
 function refineNewsTopic(originalTopic, webResults) {
   const base = String(originalTopic || "").trim();
   if (!Array.isArray(webResults) || webResults.length === 0) return base;
   const first = webResults[0];
   const title = first && first.title ? String(first.title) : "";
   if (!title || title.length < 8) return base;
-  const cleaned = title
-    .replace(/[|\-–—].*$/, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 80);
+  const cleaned = title.replace(/[|\-–—].*$/, "").replace(/\s+/g, " ").trim().slice(0, 80);
   if (cleaned.length < 6) return base;
   if (base && !cleaned.toLowerCase().includes(base.toLowerCase().slice(0, 12))) {
     return `${base} ${cleaned}`.slice(0, 100);
@@ -486,52 +429,34 @@ function dedupeWebResults(list) {
   return out;
 }
 
-/**
- * Execute one tool step with graceful missing-key / API failures.
- */
 async function executeStep(step, toolFns) {
   const { tool, args } = step;
   try {
     if (tool === "search") {
       const result = await toolFns.webSearch(args.query);
-      if (isToolError(result)) {
-        return { ok: false, kind: "web", data: [], error: result && result.error };
-      }
+      if (isToolError(result)) return { ok: false, kind: "web", data: [], error: result && result.error };
       return { ok: true, kind: "web", data: asList(result) };
     }
     if (tool === "news") {
       const result = await toolFns.getNews(args.topic);
-      if (isToolError(result)) {
-        return { ok: false, kind: "news", data: [], error: result && result.error };
-      }
+      if (isToolError(result)) return { ok: false, kind: "news", data: [], error: result && result.error };
       return { ok: true, kind: "news", data: asList(result) };
     }
     if (tool === "stock") {
-      if (!args.symbol) {
-        return { ok: false, kind: "stock", data: null, error: "No symbol" };
-      }
+      if (!args.symbol) return { ok: false, kind: "stock", data: null, error: "No symbol" };
       const result = await toolFns.getStock(args.symbol);
-      if (isToolError(result)) {
-        return { ok: false, kind: "stock", data: result, error: result && result.error };
-      }
+      if (isToolError(result)) return { ok: false, kind: "stock", data: result, error: result && result.error };
       return { ok: true, kind: "stock", data: result, symbol: args.symbol };
     }
     if (tool === "weather") {
       const result = await toolFns.getWeather(args.location);
-      if (isToolError(result)) {
-        return { ok: false, kind: "weather", data: result, error: result && result.error };
-      }
+      if (isToolError(result)) return { ok: false, kind: "weather", data: result, error: result && result.error };
       return { ok: true, kind: "weather", data: result };
     }
     return { ok: false, kind: "unknown", data: null, error: `Unknown tool: ${tool}` };
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
-    return {
-      ok: false,
-      kind: tool,
-      data: tool === "stock" || tool === "weather" ? null : [],
-      error: msg
-    };
+    return { ok: false, kind: tool, data: tool === "stock" || tool === "weather" ? null : [], error: msg };
   }
 }
 
@@ -558,42 +483,53 @@ function mergeStepResult(bag, step, outcome) {
 
 function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
   const parts = [];
-  parts.push(
-    `Synthesize one clear, useful answer for the user from the tool results below.`
-  );
-  parts.push(`Rules:`);
-  parts.push(`- Lead with the answer. Be direct; no filler.`);
-  parts.push(
-    `- When you use a web/news source, cite its real title and exact link from the lists below. Never invent URLs.`
-  );
-  parts.push(
-    `- Do NOT invent live prices, headlines, weather numbers, or availability claims that are not in the tool results.`
-  );
-  parts.push(
-    `- If tool results miss the user's budget or constraints, do NOT refuse or dead-end with "no results." Give a clear best-effort answer: practical picks with constraints (reliability, MPG, parts/insurance cost, etc.), label what came from the sources vs general knowledge, and say what the user should verify locally (listings, insurance, platform vehicle requirements).`
-  );
-  parts.push(
-    `- If a tool failed or returned thin/off-topic hits, say so briefly and still help with grounded general knowledge — without fake citations.`
-  );
-  parts.push(`- No raw JSON. Prefer short structured sections when helpful.`);
-  if (wantsRecommendation) {
-    parts.push(
-      `- If recommending, use Best Choice / Runner Up / Avoid (or Third Choice) and label uncertainty.`
-    );
+  const gig = extractGigUseCase(message);
+  const criteria = extractCriteria(message);
+  const budget = extractBudget(message);
+  const vehicle = isVehicleAsk(message);
+
+  parts.push(`You are a sharp local advisor for Blake in the Fort Worth / Alliance area (76177), Texas. Think hard, then answer decisively.`);
+  parts.push(`Reasoning (do this mentally; do NOT dump chain-of-thought as the reply):`);
+  parts.push(`- Weigh tradeoffs for HIS situation (high miles, city stop-go, cargo, Texas heat/insurance) — not generic brochure talk.`);
+  parts.push(`- Challenge weak evidence: app-store pages, wrong-country hits, luxury rideshare flex posts, incomplete snippets.`);
+  parts.push(`- Prefer a coherent ranked recommendation over tool-meta or apologies.`);
+  parts.push(`Hard rules:`);
+  parts.push(`- NEVER open with "No tool results…", "Sources focus on…", "The tool results do not provide…", "All cited sources…", or "best-effort guidance (based on general knowledge, not sources)". Lead with the pick.`);
+  parts.push(`- Lead with a direct recommendation ranked by overall annual cost, reliability, and maintenance for high-mileage gig/courier use.`);
+  parts.push(`- Cite useful real titles + exact links from the lists below. Never invent URLs or fake AAA/insurance stats.`);
+  parts.push(`- Rough annual cost buckets (fuel, insurance, maintenance, tires) OK if labeled estimates with uncertainty. No fake precision.`);
+  parts.push(`- If sources are thin/spammy, still advise like a decisive courier-aware local using solid US used-car knowledge. Do not apologize about tools.`);
+  parts.push(`- Ban nonsense: do NOT call mainstream US-market cars (Honda, Toyota, Hyundai, Kia, etc.) "foreign imports to avoid." Judge reliability, parts cost, MPG.`);
+  parts.push(`- No raw JSON. Short structured sections.`);
+
+  if (wantsRecommendation || vehicle || gig.isGig) {
+    parts.push(`Structure:`);
+    parts.push(`1) Best pick(s) first (model years that often clear the used budget).`);
+    parts.push(`2) Why: MPG / stop-go, parts, reliability, cargo.`);
+    parts.push(`3) Rough annual cost buckets with uncertainty: fuel, insurance, maintenance, tires.`);
+    parts.push(`4) Verify in Fort Worth / Alliance (76177): listings, insurance quote, PPI, platform rules.`);
+    if (budget != null) parts.push(`- Budget ceiling ~$${budget}.`);
+    if (gig.isGig) parts.push(`- Use-case: ${gig.label || "gig delivery"} — durability at high annual miles.`);
+    if (criteria.annualCost || criteria.reliability || criteria.maintenance) {
+      parts.push(`- Rank on annual running cost, reliability, maintenance — not badge prestige.`);
+    }
+    parts.push(`- Best Choice / Runner Up / Third Choice (Avoid only for truly bad gig picks: thirsty trucks, project cars).`);
   }
+
   parts.push(``);
   parts.push(`User question:`);
   parts.push(message);
   parts.push(``);
   parts.push(`Intent: ${intent}`);
 
-  if (bag.web && bag.web.length) {
+  const webForPrompt = Array.isArray(bag.web) ? rankWebResultsForSynth(bag.web) : bag.web;
+  if (webForPrompt && webForPrompt.length) {
     parts.push(``);
-    parts.push(`Web search results:`);
-    parts.push(formatWebResults(bag.web));
+    parts.push(`Web search results (ranked; prefer Edmunds/KBB/CR/RepairPal/Fuelly/Reddit; ignore app-store spam):`);
+    parts.push(formatWebResults(webForPrompt));
   } else if (bag.web) {
     parts.push(``);
-    parts.push(`Web search results: (none)`);
+    parts.push(`Web search results: (none useful — still give a direct advisor answer)`);
   }
 
   if (bag.news && bag.news.length) {
@@ -620,20 +556,15 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
     parts.push(JSON.stringify(bag.weather, null, 2));
   }
 
-  if (bag.errors.length) {
+  if (bag.errors && bag.errors.length) {
     parts.push(``);
-    parts.push(`Tool errors (do not invent replacements):`);
-    for (const e of bag.errors) {
-      parts.push(`- ${e.tool}: ${e.error}`);
-    }
+    parts.push(`Tool notes (do not lead the reply with these; do not invent replacements):`);
+    for (const e of bag.errors) parts.push(`- ${e.tool}: ${e.error}`);
   }
 
   return parts.join("\n");
 }
 
-/**
- * Run the multi-step research loop.
- */
 async function runResearchLoop(opts) {
   const message = String(opts.message || "");
   const route = opts.route || { intent: "chat", payload: {} };
@@ -641,45 +572,25 @@ async function runResearchLoop(opts) {
   const stream = opts.stream || { note() {}, chunk() {} };
   const askOllama = opts.askOllama;
   const toolFns = opts.tools;
-
   const steps = planTools(route, message);
-  const wantsRecommendation = !!(
-    route.payload && route.payload.wantsRecommendation
-  );
+  const wantsRecommendation = !!(route.payload && route.payload.wantsRecommendation);
   const skipSynthesize = !!opts.skipSynthesize;
 
   if (!steps.length) {
-    return {
-      text: "",
-      model,
-      plan: [],
-      bag: { web: null, news: null, stocks: {}, weather: null, errors: [] },
-      skipped: true
-    };
+    return { text: "", model, plan: [], bag: { web: null, news: null, stocks: {}, weather: null, errors: [] }, skipped: true };
   }
 
-  const bag = {
-    web: null,
-    news: null,
-    stocks: {},
-    weather: null,
-    errors: []
-  };
+  const bag = { web: null, news: null, stocks: {}, weather: null, errors: [] };
 
-  // Log rewritten queries for session diagnostics
   for (const s of steps) {
     if (s.queryMeta && s.queryMeta.wasRewritten) {
-      stream.note(
-        `Query rewrite: "${String(s.queryMeta.original || "").slice(0, 80)}" → "${s.args.query}"`
-      );
+      stream.note(`Query rewrite: "${String(s.queryMeta.original || "").slice(0, 80)}" → "${s.args.query}"`);
     } else if (s.tool === "search" && s.args && s.args.query) {
       stream.note(`Search query: "${s.args.query}"`);
     }
   }
 
-  stream.note(
-    `Research plan (${steps.length} step${steps.length === 1 ? "" : "s"}): ${describePlan(steps)}`
-  );
+  stream.note(`Research plan (${steps.length} step${steps.length === 1 ? "" : "s"}): ${describePlan(steps)}`);
 
   let i = 0;
   let stepOrdinal = 0;
@@ -690,10 +601,7 @@ async function runResearchLoop(opts) {
     const group = step.parallelGroup;
     let batch = [step];
     if (group) {
-      while (
-        i + batch.length < steps.length &&
-        steps[i + batch.length].parallelGroup === group
-      ) {
+      while (i + batch.length < steps.length && steps[i + batch.length].parallelGroup === group) {
         batch.push(steps[i + batch.length]);
       }
     }
@@ -707,201 +615,102 @@ async function runResearchLoop(opts) {
         const refined = refineNewsTopic(s.args.topic, bag.web);
         if (refined && refined !== s.args.topic) {
           s.args = { ...s.args, topic: refined };
-          stream.note(
-            `Step ${stepOrdinal}/${totalLabel}: ${s.label} (refined topic)…`
-          );
+          stream.note(`Step ${stepOrdinal}/${totalLabel}: ${s.label} (refined topic)…`);
         } else {
           stream.note(`Step ${stepOrdinal}/${totalLabel}: ${s.label}…`);
         }
       } else {
         const detail =
-          s.tool === "search"
-            ? ` for "${s.args.query}"`
-            : s.tool === "news"
-              ? ` on "${s.args.topic}"`
-              : s.tool === "stock"
-                ? ` ${s.args.symbol || ""}`
-                : s.tool === "weather"
-                  ? ` for ${s.args.location || ""}`
-                  : "";
-        stream.note(
-          `Step ${stepOrdinal}/${totalLabel}: ${s.label}${detail}…`
-        );
+          s.tool === "search" ? ` for "${s.args.query}"`
+            : s.tool === "news" ? ` on "${s.args.topic}"`
+              : s.tool === "stock" ? ` ${s.args.symbol || ""}`
+                : s.tool === "weather" ? ` for ${s.args.location || ""}` : "";
+        stream.note(`Step ${stepOrdinal}/${totalLabel}: ${s.label}${detail}…`);
       }
 
       const outcome = await executeStep(s, toolFns);
       mergeStepResult(bag, s, outcome);
 
       if (outcome.ok) {
-        if (outcome.kind === "web") {
-          stream.note(
-            `Found ${outcome.data.length} web result${outcome.data.length === 1 ? "" : "s"}.`
-          );
-        } else if (outcome.kind === "news") {
-          stream.note(
-            `Found ${outcome.data.length} headline${outcome.data.length === 1 ? "" : "s"}.`
-          );
-        } else if (
-          outcome.kind === "stock" &&
-          outcome.data &&
-          outcome.data.price != null
-        ) {
-          stream.note(
-            `${outcome.symbol}: $${outcome.data.price}` +
-              (outcome.data.changePercent != null
-                ? ` (${outcome.data.changePercent})`
-                : "")
-          );
-        } else if (
-          outcome.kind === "weather" &&
-          outcome.data &&
-          outcome.data.location
-        ) {
+        if (outcome.kind === "web") stream.note(`Found ${outcome.data.length} web result${outcome.data.length === 1 ? "" : "s"}.`);
+        else if (outcome.kind === "news") stream.note(`Found ${outcome.data.length} headline${outcome.data.length === 1 ? "" : "s"}.`);
+        else if (outcome.kind === "stock" && outcome.data && outcome.data.price != null) {
+          stream.note(`${outcome.symbol}: $${outcome.data.price}` + (outcome.data.changePercent != null ? ` (${outcome.data.changePercent})` : ""));
+        } else if (outcome.kind === "weather" && outcome.data && outcome.data.location) {
           const w = outcome.data;
           const bits = [w.location];
-          if (w.current) {
-            bits.push(
-              `${w.current.temp_f}°F, ${w.current.condition || ""}`.trim()
-            );
-          }
+          if (w.current) bits.push(`${w.current.temp_f}°F, ${w.current.condition || ""}`.trim());
           stream.note(`Weather loaded: ${bits.join(" — ")}`);
         }
       } else {
-        stream.note(
-          `${s.label} unavailable${outcome.error ? ": " + String(outcome.error).slice(0, 80) : ""}. Continuing…`
-        );
+        stream.note(`${s.label} unavailable${outcome.error ? ": " + String(outcome.error).slice(0, 80) : ""}. Continuing…`);
       }
 
-      // After first search: if thin/off-topic and no second search planned, auto-follow-up
       if (
-        !autoFollowUpDone &&
-        s.tool === "search" &&
-        s.id === "search" &&
-        outcome.kind === "web" &&
-        steps.length < MAX_STEPS &&
-        !steps.some((x) => x.id === "search2") &&
+        !autoFollowUpDone && s.tool === "search" && s.id === "search" && outcome.kind === "web" &&
+        steps.length < MAX_STEPS && !steps.some((x) => x.id === "search2" || x.id === "search3") &&
         resultsSeemThinOrOffTopic(bag.web, message, s.args.query)
       ) {
         autoFollowUpDone = true;
-        const rw = rewriteSearchQuery(message, {
-          wantsRecommendation: wantsRecommendation || true
-        });
-        const followQ =
-          rw.alternate ||
-          `reliable affordable ${rw.primary || s.args.query}`.slice(0, 100);
-        if (
-          followQ &&
-          followQ.toLowerCase() !== String(s.args.query).toLowerCase()
-        ) {
-          const follow = {
-            id: "search2",
-            tool: "search",
-            label: "Web search (auto-refined)",
-            args: { query: followQ },
-            mergeWeb: true
-          };
-          steps.splice(i + 1, 0, follow);
-          stream.note(
-            `First results looked thin/off-topic — adding refined search: "${followQ}"`
-          );
+        const rw = rewriteSearchQuery(message, { wantsRecommendation: wantsRecommendation || true });
+        const followQ = rw.alternate || rw.queries[1] || `reliable affordable ${rw.primary || s.args.query}`.slice(0, 100);
+        if (followQ && followQ.toLowerCase() !== String(s.args.query).toLowerCase()) {
+          steps.splice(i + 1, 0, {
+            id: "search2", tool: "search", label: "Web search (auto-refined)",
+            args: { query: followQ }, mergeWeb: true
+          });
+          stream.note(`First results looked thin/off-topic — adding refined search: "${followQ}"`);
         }
       }
     } else {
       stepOrdinal += batch.length;
-      stream.note(
-        `Steps ${stepOrdinal - batch.length + 1}–${stepOrdinal}/${steps.length}: ${batch
-          .map((b) => b.label)
-          .join(" + ")} (parallel)…`
-      );
+      stream.note(`Steps ${stepOrdinal - batch.length + 1}–${stepOrdinal}/${steps.length}: ${batch.map((b) => b.label).join(" + ")} (parallel)…`);
       const outcomes = await Promise.all(batch.map((s) => executeStep(s, toolFns)));
       outcomes.forEach((outcome, idx) => {
         mergeStepResult(bag, batch[idx], outcome);
-        if (
-          outcome.ok &&
-          outcome.kind === "stock" &&
-          outcome.data &&
-          outcome.data.price != null
-        ) {
-          stream.note(
-            `${outcome.symbol}: $${outcome.data.price}` +
-              (outcome.data.changePercent != null
-                ? ` (${outcome.data.changePercent})`
-                : "")
-          );
+        if (outcome.ok && outcome.kind === "stock" && outcome.data && outcome.data.price != null) {
+          stream.note(`${outcome.symbol}: $${outcome.data.price}` + (outcome.data.changePercent != null ? ` (${outcome.data.changePercent})` : ""));
         } else if (!outcome.ok) {
           stream.note(`${batch[idx].label} unavailable. Continuing…`);
         }
       });
     }
-
     i += batch.length;
   }
 
+  if (Array.isArray(bag.web) && bag.web.length) bag.web = rankWebResultsForSynth(bag.web);
+
   const citations = countCitations(bag);
-  const hasStock =
-    bag.stocks &&
-    Object.keys(bag.stocks).some((k) => bag.stocks[k] && !bag.stocks[k].error);
+  const hasStock = bag.stocks && Object.keys(bag.stocks).some((k) => bag.stocks[k] && !bag.stocks[k].error);
   const hasWeather = bag.weather && !bag.weather.error;
   const hasAny = citations > 0 || hasStock || hasWeather;
 
-  if (skipSynthesize) {
-    return { text: "", model, plan: steps, bag, gathered: true };
-  }
+  if (skipSynthesize) return { text: "", model, plan: steps, bag, gathered: true };
+
+  const askOpts = { think: !!opts.think };
 
   if (!hasAny) {
     if (wantsRecommendation && typeof askOllama === "function") {
-      stream.note("No live sources — drafting a cautious recommendation…");
-      const text = await askOllama(
-        `Give a practical recommendation for the user. Be direct. Label uncertainty. Do not invent live prices, availability, or URLs.
-If the ask has a budget or use-case (e.g. gig delivery under $10k), still suggest best-effort picks with constraints (reliability, MPG, parts, insurance) and say what to verify.
-
-User question:
-${message}
-
-Provide:
-Best Choice: …
-Runner Up: …
-Third Choice: …
-Avoid: …`,
-        model,
-        stream.chunk
-      );
+      stream.note("Drafting a practical recommendation…");
+      const text = await askOllama(buildSynthesisPrompt(message, route.intent, bag, true), model, stream.chunk, askOpts);
       return { text, model, plan: steps, bag };
     }
-
     const failBits = bag.errors.map((e) => e.error).filter(Boolean);
-    const text =
-      failBits.length > 0
-        ? `I couldn't retrieve reliable live data right now (${failBits[0]}). Check API keys in .env and try again.`
-        : "I couldn't retrieve reliable live data right now. Please try again in a moment.";
+    const text = failBits.length > 0
+      ? `I couldn't retrieve reliable live data right now (${failBits[0]}). Check API keys in .env and try again.`
+      : "I couldn't retrieve reliable live data right now. Please try again in a moment.";
     return { text, model, plan: steps, bag };
   }
 
-  stream.note(
-    `Synthesizing from ${citations || "tool"} source${citations === 1 ? "" : "s"}…`
-  );
-
-  const prompt = buildSynthesisPrompt(
-    message,
-    route.intent,
-    bag,
-    wantsRecommendation
-  );
-
-  const text = await askOllama(prompt, model, stream.chunk);
+  stream.note(`Synthesizing from ${citations || "tool"} source${citations === 1 ? "" : "s"}…`);
+  const prompt = buildSynthesisPrompt(message, route.intent, bag, wantsRecommendation);
+  const text = await askOllama(prompt, model, stream.chunk, askOpts);
   return { text, model, plan: steps, bag };
 }
 
 module.exports = {
-  planTools,
-  runResearchLoop,
-  formatWebResults,
-  formatNewsResults,
-  refineNewsTopic,
-  describePlan,
-  rewriteSearchQuery,
-  rewriteNewsTopic,
-  resultsSeemThinOrOffTopic,
-  buildSynthesisPrompt,
-  MAX_STEPS
+  planTools, runResearchLoop, formatWebResults, formatNewsResults, refineNewsTopic,
+  describePlan, rewriteSearchQuery, rewriteNewsTopic, resultsSeemThinOrOffTopic,
+  buildSynthesisPrompt, extractBudget, extractGigUseCase, extractCriteria,
+  hasCostReliabilityLanguage, rankWebResultsForSynth, scoreWebResultForSynth, MAX_STEPS
 };
