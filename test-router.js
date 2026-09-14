@@ -120,4 +120,21 @@ expectIntent("what about Prius battery recall?", "search", (r) => {
 });
 expectIntent("insurance quote for a used Prius", "search");
 
+
+// Gig-vehicle domain upgrade (follow-ups without repeating DoorDash)
+{
+  const { ensureGigVehicleDomainRoute } = require("./domain/gigVehicle");
+  const { planTools } = require("./researchLoop");
+  const q = "Prius vs Corolla if you do ~40k miles/year, or cargo van for mixed days?";
+  const forced = ensureGigVehicleDomainRoute(q, routeMessage(q), {});
+  assert.strictEqual(forced.intent, "search");
+  const plan = planTools(forced, q);
+  assert.ok(plan.some((s) => s.tool === "domain"));
+  // Recall still forces search tools, not domain-only
+  const recall = "Did you consider what generation of Prius and battery recall?";
+  const rRoute = routeMessage(recall);
+  assert.strictEqual(rRoute.intent, "search");
+  assert.ok(rRoute.payload.forceToolRefresh || rRoute.payload.tools.includes("search"));
+}
+
 console.log("All router tests passed.");

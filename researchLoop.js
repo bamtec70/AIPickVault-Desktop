@@ -538,9 +538,11 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
   const hasLiveNews = Array.isArray(bag.news) && bag.news.length > 0;
   const packOnly = !!(bag.domainPack && String(bag.domainPack).length > 40) && !hasLiveWeb && !hasLiveNews;
   if (packOnly) {
-    parts.push(`- PACK-ONLY turn: no live web/news tool results were used. In "Sourced vs estimate", say pack heuristic / estimate (local gig-vehicle specialist pack). Do NOT invent TDI, DFW market scrapes, dealer quotes, Autotrader/Cars.com "sources", listing prices, or fake citations. Point to Autotrader/Cars.com filters for Fort Worth / Alliance (76177) without claiming you pulled live inventory.`);
+    parts.push(`- PACK-ONLY turn: no live web/news tool results were used. In "Sourced vs estimate", say pack heuristic / estimate (local gig-vehicle specialist pack) ONLY. Do NOT invent TDI, DFW market scrapes, dealer quotes, Autotrader/Cars.com "sources", listing prices, fake citations, SOH %, failure probabilities, reliability index scores, or NHTSA campaign details. Point to Autotrader/Cars.com filters for Fort Worth / Alliance (76177) without claiming you pulled live inventory.`);
   }
   parts.push(`- Do not invent NHTSA recall campaign IDs unless present in tool text; if unsure, say so and rely on what the sources show.`);
+  parts.push(`- ANTI-FAKE-STATS: Never invent SOH percentages, failure probabilities, \"X% of cars\", reliability index scores (e.g. 3.2/5.0), or precise chance-of-failure numbers unless those exact figures appear in the tool result text below. Prefer qualitative: \"battery health varies; require PPI / SOH report.\"`);
+  parts.push(`- Do not over-claim NHTSA sourcing. If campaign details are not in tool snippets, say you do not have the campaign text — do not fabricate IDs or rates.`);
   parts.push(`- Rough annual cost buckets (fuel, insurance, maintenance, tires) OK if labeled estimates with uncertainty. No fake precision. Do NOT double-count buckets (e.g. tires twice).`);
   parts.push(`- If sources are thin/spammy, still advise like a decisive courier-aware local using solid US used-car knowledge. Do not apologize about tools.`);
   parts.push(`- Ban nonsense: do NOT call mainstream US-market cars (Honda, Toyota, Hyundai, Kia, etc.) "foreign imports to avoid." Judge reliability, parts cost, MPG.`);

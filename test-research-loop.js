@@ -175,6 +175,35 @@ assert.strictEqual(
   assert.ok(plan.some((s) => s.tool === "search"));
 }
 
+// --- Hard same-subject follow-ups: Prius vs Corolla / mileage / van → domain (not plain chat) ---
+{
+  const { ensureGigVehicleDomainRoute, shouldUseKnowledgeFirst } = require("./domain/gigVehicle");
+  const q =
+    "Prius vs Corolla if you do ~40k miles/year, or would a cargo van still win for mixed gig days?";
+  const raw = routeMessage(q);
+  assert.strictEqual(raw.intent, "chat", "bare router may still say chat before ensure");
+  const forced = ensureGigVehicleDomainRoute(q, raw, {});
+  assert.strictEqual(forced.intent, "search", "must upgrade to search for domain pack");
+  assert.ok(forced.payload.domainPackPreferred || forced.payload.wantsRecommendation);
+  assert.strictEqual(shouldUseKnowledgeFirst(q, forced), true);
+  const plan = planTools(forced, q);
+  assert.ok(plan.some((s) => s.tool === "domain"), "40k Prius vs Corolla → domain, got: " + describePlan(plan));
+  assert.ok(!plan.some((s) => s.tool === "search"), "general advice must not SerpAPI-blast");
+}
+{
+  // Conversation context: short follow-up after gig-car thread still uses domain
+  const { ensureGigVehicleDomainRoute } = require("./domain/gigVehicle");
+  const hist = [
+    { role: "user", content: "best car for DoorDash under $10000 looking at annual cost reliability" },
+    { role: "assistant", content: "Prius Gen3 if battery SOH verified, else Corolla." }
+  ];
+  const q = "What about at 40k miles a year?";
+  const forced = ensureGigVehicleDomainRoute(q, routeMessage(q), { conversationHistory: hist });
+  assert.strictEqual(forced.intent, "search");
+  const plan = planTools(forced, q);
+  assert.ok(plan.some((s) => s.tool === "domain"), "history follow-up → domain, got: " + describePlan(plan));
+}
+
 // --- Verification follow-ups FORCE search (recall / price / listing) ---
 {
   const recall = "Did you consider what generation of Prius and battery recall?";
@@ -227,6 +256,7 @@ assert.strictEqual(
   assert.match(prompt, /tradeoff|Think hard|Challenge weak/i);
   assert.match(prompt, /Sourced vs estimate|estimates clearly/i);
   assert.match(prompt, /NHTSA|recall campaign/i);
+  assert.match(prompt, /ANTI-FAKE-STATS|Never invent SOH|SOH percentages|failure probabilities|reliability index/i);
   assert.match(prompt, /double-count|tires twice/i);
   assert.match(prompt, /for-sale|verified at dealer|Autotrader|Cars\.com/i);
   assert.match(prompt, /domain knowledge pack|Knowledge-first/i);
@@ -250,6 +280,7 @@ assert.strictEqual(
   assert.match(pack, /oil dilution/i);
   assert.match(pack, /fuel penalty/i);
   assert.strictEqual(shouldUseKnowledgeFirst("best car for DoorDash under $10000", { intent: "search", payload: { wantsRecommendation: true } }), true);
+  assert.strictEqual(shouldUseKnowledgeFirst("Prius vs Corolla if you do ~40k miles/year", { intent: "search", payload: { wantsRecommendation: true } }), true);
   assert.strictEqual(needsFactualRefresh("what about Prius battery recall?"), true);
   assert.strictEqual(shouldUseKnowledgeFirst("what about Prius battery recall?", { intent: "search", payload: { forceToolRefresh: true } }), false);
 }
@@ -323,6 +354,7 @@ assert.strictEqual(
   );
   assert.match(prompt, /PACK-ONLY|pack heuristic/i);
   assert.match(prompt, /Do NOT invent TDI|DFW market scrapes|fake citations/i);
+  assert.match(prompt, /SOH %|failure probabilit|reliability index|invented %|Never invent SOH/i);
   console.log("All research-loop tests passed.");
 })().catch((err) => {
   console.error(err);

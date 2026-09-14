@@ -11,7 +11,7 @@ const { routeMessage, needsFactualRefresh } = require("./router");
 const { runResearchLoop, planTools, formatNewsResults } = require("./researchLoop");
 const sessionLog = require("./sessionLog");
 const { createDurableMemory } = require("./durableMemory");
-const { shouldUseKnowledgeFirst, domainPackPromptSection } = require("./domain/gigVehicle");
+const { shouldUseKnowledgeFirst, domainPackPromptSection, ensureGigVehicleDomainRoute } = require("./domain/gigVehicle");
 
 /** Durable facts across sessions (userData/memory.json). */
 let durableMemory = null;
@@ -51,6 +51,9 @@ Anti-hallucination (critical)
 - Do not invent NHTSA recall campaign IDs unless present in tool text; if unsure, search first (do not guess).
 - Do not double-count cost buckets (e.g. tires listed twice under maintenance and tires).
 - Never invent fake AAA/insurance statistics or live prices not present in tool results.
+- Never invent SOH percentages, failure probabilities, "X% of cars have…", reliability index scores (e.g. 3.2/5.0), or NHTSA campaign details unless those exact figures appear in tool result text.
+- Prefer qualitative heuristics for battery/reliability (e.g. "battery health varies; require PPI / SOH report") over fabricated precise stats.
+- On pack-only / domain-pack turns, "Sourced vs estimate" must say pack heuristic only — do not over-claim NHTSA or market sourcing.
 - Never label mainstream US-market cars as "foreign imports to avoid."
 
 Style
@@ -423,7 +426,12 @@ async function askOllama(prompt, model = "qwen3:30b", onChunk, opts) {
   const memSuffix = getDurableMemory().buildSystemSuffix();
   let system = SYSTEM_PROMPT + memSuffix;
   // Knowledge-first: inject local gig-vehicle pack for courier/vehicle advice turns.
-  if (shouldUseKnowledgeFirst(String(prompt || ""), null)) {
+  if (
+    shouldUseKnowledgeFirst(String(prompt || ""), null, {
+      conversationHistory,
+      durableMemory: getDurableMemory()
+    })
+  ) {
     system += domainPackPromptSection();
   }
   const messages = [{ role: "system", content: system }];
@@ -685,6 +693,18 @@ ipcMain.handle("ask-model", async (event, data) => {
     let route = routeMessage(message);
     route = maybePreferChatHistory(message, route);
     route = forceToolRefreshRoute(message, route);
+    // Hard same-subject gig-vehicle follow-ups (Prius/Corolla/TCO/van) → domain pack, not plain chat.
+    {
+      const before = route;
+      route = ensureGigVehicleDomainRoute(message, route, {
+        conversationHistory,
+        durableMemory: getDurableMemory()
+      });
+      if (route !== before && route.intent === "search" && route.payload && route.payload.domainPackPreferred) {
+        console.log("GIG_VEHICLE_DOMAIN → search/domain (was:", before.intent, ")");
+        sessionLog.info("GIG_VEHICLE_DOMAIN", "upgraded from " + before.intent + " for knowledge-first pack");
+      }
+    }
     console.log("ROUTE:", JSON.stringify(route));
     sessionLog.route(route);
     console.log(
