@@ -6,7 +6,7 @@ It runs locally with Electron + Ollama. It is **not** integrated with aipickvaul
 
 ## Features
 
-- Local AI chat (Ollama models such as llama3 / qwen3-coder)
+- Local AI chat (default Ollama model: qwen3:30b)
 - Intelligent search (SerpAPI)
 - Weather forecasts (WeatherAPI)
 - News analysis (NewsAPI)
@@ -17,7 +17,7 @@ It runs locally with Electron + Ollama. It is **not** integrated with aipickvaul
 
 - Node.js
 - [Ollama](https://ollama.com) running locally (`http://127.0.0.1:11434`)
-- At least one pulled model, e.g. `ollama pull llama3`
+- At least one pulled model. Default UI model is `qwen3:30b` (`ollama pull qwen3:30b`)
 
 ## Setup
 
@@ -39,6 +39,7 @@ FINNHUB_API_KEY=your_finnhub_key
 ## Run
 
 ```bash
+npm test
 npm start
 ```
 
@@ -46,7 +47,7 @@ npm start
 
 - Electron
 - Node.js
-- Ollama (llama3 / qwen3-coder as configured in the UI)
+- Ollama (qwen3:30b default; also qwen3:14b / qwen3:8b / qwen3-coder:30b / llama3 / local-assistant)
 - WeatherAPI
 - NewsAPI
 - Finnhub
@@ -65,6 +66,8 @@ Version: v1.1 development (standalone research assistant)
 - Stock + news fusion / structured stock reports (phase 1)
 - Stock comparison (`compare SYMBOL vs SYMBOL`)
 - Recommendation engine phase 1 (basic)
+- Deterministic intent router (stock > weather > news > search > chat)
+- Default model set to qwen3:30b
 
 ### In progress / next
 

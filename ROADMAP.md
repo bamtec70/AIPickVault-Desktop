@@ -15,6 +15,8 @@ Standalone research assistant (Electron + Ollama). Design Webber owns this repo 
 | Stock comparison | Done |
 | Recommendation engine phase 1 | Done (basic) |
 | UI stabilize (clear, safe chat, Ollama errors) | Done |
+| Intent router (fewer false weather/stock matches) | Done |
+| Default model qwen3:30b | Done |
 | Forecast intelligence polish | In progress |
 | Deeper earnings / market context | Next |
 | Local search | Later |
@@ -47,6 +49,14 @@ Standalone research assistant (Electron + Ollama). Design Webber owns this repo 
 
 - Best / runner-up / avoid style fallback when search results are empty
 
+### Intent routing
+
+- Extracted `routeMessage()` in `router.js`
+- Priority: stock_compare > stock > weather > news > search > chat
+- Weather requires context (not bare high/low/rain)
+- Tickers: 1-5 letters, $TICKER, aliases (Apple to AAPL); skip common words
+- Chat fallback for identity / how-to without forcing a tool
+
 ## In progress
 
 - Forecast intelligence (weekend / multi-day polish)
@@ -56,7 +66,10 @@ Standalone research assistant (Electron + Ollama). Design Webber owns this repo 
 
 - Earnings impact analysis (when data sources allow — no new APIs in stabilize pass)
 - Local search (businesses / Fort Worth)
-- Routing polish (fewer false weather/stock matches)
+- Streaming replies
+- Conversation memory
+- Multi-step tool use (search + news + synthesize planner)
+- Optional xAI provider adapter behind askOllama
 
 ## Later / ideas
 
@@ -74,4 +87,4 @@ Standalone research assistant (Electron + Ollama). Design Webber owns this repo 
 
 ### v1.1 (active)
 
-- Forecast weather, Finnhub stocks, structured reports, comparison, search quality, basic recommendations, UI harden
+- Forecast weather, Finnhub stocks, structured reports, comparison, search quality, basic recommendations, UI harden, intent router, qwen3:30b default
