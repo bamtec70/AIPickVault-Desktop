@@ -350,7 +350,71 @@ function isChatish(lower) {
   return false;
 }
 
+/**
+ * Follow-ups that need live tools (not pure chat), even mid-conversation:
+ * recalls/NHTSA, prices/listings, insurance quotes, availability, or
+ * challenging a prior recommendation.
+ */
+function needsFactualRefresh(message) {
+  const lower = String(message || "").toLowerCase();
+  if (!lower.trim()) return false;
+
+  // Safety / recalls / NHTSA
+  if (/\b(recalls?|nhtsa|safety\s+campaign|campaign\s*(?:id|number)|takata)\b/i.test(lower)) {
+    return true;
+  }
+  if (
+    /\bbattery\s+recall\b/i.test(lower) ||
+    (/\bgeneration\b/i.test(lower) && /\b(prius|hybrid|battery)\b/i.test(lower))
+  ) {
+    return true;
+  }
+
+  // Prices, listings, availability
+  if (
+    /\b(listings?|for\s+sale|asking\s+price|market\s+value|fair\s+price|autotrader|cars\.com|cargurus|carvana|availability|in\s+stock|dealer\s+(?:price|inventory)|verified\s+at\s+dealer)\b/i.test(
+      lower
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(how\s+much\s+(?:do|does|is|are)|what(?:'s| is)\s+(?:the\s+)?(?:price|cost)|prices?\b)/i.test(
+      lower
+    ) &&
+    /\b(car|truck|suv|vehicle|prius|van|hybrid|sedan|insurance)\b/i.test(lower)
+  ) {
+    return true;
+  }
+
+  // Insurance quotes
+  if (/\binsurance\b/i.test(lower) && /\b(quote|quotes|cost|rate|premium|how\s+much)\b/i.test(lower)) {
+    return true;
+  }
+
+  // Challenge prior recommendation / ask to verify something specific
+  if (
+    /\b(did you (?:consider|check|look\s*up|verify|account\s+for)|are you sure|is that (?:true|accurate|correct|right)|you (?:said|claimed|recommended|mentioned)|verify that)\b/i.test(
+      lower
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(what about|how about)\b/i.test(lower) &&
+    /\b(recall|nhtsa|price|listing|insurance|battery|generation|maintenance|reliability|mpg|tire|availability)\b/i.test(
+      lower
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 function isSearchIntent(text, lower) {
+  // Factual refresh beats chitchat heuristics (recall / price / challenge follow-ups).
+  if (needsFactualRefresh(text)) return true;
   if (isChatish(lower)) return false;
 
   if (/^(search|look\s*up|lookup|find|google)\b/i.test(text)) return true;
@@ -383,7 +447,7 @@ function extractSearchQuery(message) {
 }
 
 function shouldAlsoSearchNews(lower) {
-  return /\b(latest|happening|current|today|breaking)\b/.test(lower);
+  return /\b(latest|happening|current|today|breaking|recall|nhtsa)\b/.test(lower);
 }
 
 function wantsRecommendation(lower) {
@@ -443,13 +507,18 @@ function routeMessage(message) {
   }
 
   if (isSearchIntent(text, lower)) {
-    const tools = shouldAlsoSearchNews(lower) ? ["search", "news"] : ["search"];
-    // Optional 3rd finance step when research text names a known company + market words.
+    const tools = ["search"];
+    if (shouldAlsoSearchNews(lower) || /\b(recall|nhtsa)\b/i.test(lower)) {
+      tools.push("news");
+    }
+    const forceRefresh = needsFactualRefresh(text);
+    // Optional finance step only for real market asks — not vehicle price/recall refreshes.
     const optionalSymbol = findAlias(lower);
     if (
       optionalSymbol &&
       tools.length < 3 &&
-      /\b(stock|shares?|price|market|earnings|ticker)\b/i.test(lower)
+      !forceRefresh &&
+      /\b(stock|shares?|market|earnings|ticker)\b/i.test(lower)
     ) {
       tools.push("stock");
     }
@@ -459,6 +528,7 @@ function routeMessage(message) {
         query: extractSearchQuery(text),
         tools,
         wantsRecommendation: rec,
+        forceToolRefresh: forceRefresh || undefined,
         optionalSymbol: optionalSymbol || undefined
       }
     };
@@ -472,6 +542,7 @@ function routeMessage(message) {
 
 module.exports = {
   routeMessage,
+  needsFactualRefresh,
   STOCK_ALIASES,
   DEFAULT_WEATHER_LOCATION
 };

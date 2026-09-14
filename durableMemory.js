@@ -101,7 +101,8 @@ function createDurableMemory(getUserDataPath) {
       [/roadie/i, "Roadie"],
       [/instacart/i, "Instacart"],
       [/grubhub/i, "Grubhub"],
-      [/amazon\s+flex/i, "Amazon Flex"]
+      [/amazon\s+flex/i, "Amazon Flex"],
+      [/\bshipt\b/i, "Shipt"]
     ];
     for (const [re, name] of platformMap) {
       if (re.test(text) && !mem.work.platforms.includes(name)) {
@@ -142,9 +143,13 @@ function createDurableMemory(getUserDataPath) {
 
     // Vehicle notes
     if (/\bcargo\s+van\b/i.test(text)) {
-      uniqPush(mem.work.vehicleNotes, "Uses or considering a cargo van", MAX_FACTS);
-      uniqPush(mem.facts, "Cargo van relevant to delivery work", MAX_FACTS);
+      uniqPush(mem.work.vehicleNotes, "Maintains a cargo van", MAX_FACTS);
+      uniqPush(mem.facts, "Maintains a cargo van for delivery work", MAX_FACTS);
       learned.push("vehicle:cargo-van");
+    }
+    if (/\b(sub-?\$?10k|under\s+\$?10,?000|under\s+\$?10k)\b/i.test(text) && /\b(car|vehicle|sedan|hybrid|prius)\b/i.test(text)) {
+      uniqPush(mem.work.vehicleNotes, "Also evaluating sub-$10k car for food/gig delivery", MAX_FACTS);
+      learned.push("vehicle:sub10k");
     }
     if (/\b(prius|corolla|civic|camry|accord)\b/i.test(text)) {
       const m = text.match(/\b(prius|corolla|civic|camry|accord)\b/i);
@@ -230,6 +235,40 @@ function createDurableMemory(getUserDataPath) {
     return "\n\n" + lines.join("\n");
   }
 
+  function ensureSeedProfile() {
+    const mem = load();
+    const added = [];
+    const platforms = ["DoorDash", "Uber", "Uber Eats", "Roadie", "Amazon Flex", "Shipt"];
+    for (const p of platforms) {
+      if (!mem.work.platforms.includes(p)) {
+        mem.work.platforms.push(p);
+        added.push("platform:" + p);
+      }
+    }
+    const beforeNotes = mem.work.vehicleNotes.slice();
+    uniqPush(mem.work.vehicleNotes, "Maintains a cargo van", MAX_FACTS);
+    uniqPush(mem.work.vehicleNotes, "Also evaluating sub-$10k car for food/gig delivery", MAX_FACTS);
+    if (mem.work.vehicleNotes.join("|") !== beforeNotes.join("|")) added.push("vehicle:seed");
+    mem.profile.location = "Fort Worth / Alliance (76177)";
+    mem.profile.region = "Texas, US";
+    mem.profile.name = mem.profile.name || "Blake";
+    uniqPush(mem.facts, "Works last-mile / gig delivery", MAX_FACTS);
+    uniqPush(mem.facts, "Lives/works near Fort Worth Alliance (76177)", MAX_FACTS);
+    uniqPush(
+      mem.preferences,
+      "Cares about overall annual cost, reliability, and maintenance",
+      MAX_PREFERENCES
+    );
+    uniqPush(
+      mem.preferences,
+      "Be honest about uncertainty; prefer sourced facts over guesses",
+      MAX_PREFERENCES
+    );
+    uniqPush(mem.preferences, "Used vehicle budget around under $10000", MAX_PREFERENCES);
+    if (added.length) save();
+    return { added };
+  }
+
   function reset() {
     cache = defaultMemory();
     save();
@@ -245,6 +284,7 @@ function createDurableMemory(getUserDataPath) {
     learnFromUserMessage,
     learnFromAssistantTurn,
     buildSystemSuffix,
+    ensureSeedProfile,
     reset,
     getSnapshot,
     memoryPath

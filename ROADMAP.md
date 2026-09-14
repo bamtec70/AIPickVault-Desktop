@@ -14,6 +14,9 @@ Standalone research assistant (Electron + Ollama). Design Webber owns this repo 
 | Stock + news fusion phase 1 | Done |
 | Stock comparison | Done |
 | Recommendation engine phase 1 | Done (basic) |
+| Gig-vehicle specialist pack (knowledge-first) | Done |
+| Factual refresh (recall/price → tools) | Done |
+| Durable memory seed (platforms + van) | Done |
 | UI stabilize (clear, safe chat, Ollama errors) | Done |
 | Intent router (fewer false weather/stock matches) | Done |
 | Default model qwen3:30b | Done |
@@ -22,6 +25,30 @@ Standalone research assistant (Electron + Ollama). Design Webber owns this repo 
 | Local search | Later |
 | Vault picks tool | Later (optional) |
 | aipickvault.com shopping integration | Out of scope for now |
+
+
+
+## Specialist subject learning (gig / delivery vehicles)
+
+Desktop is being fine-tuned as a **local specialist** for Blake's courier vehicle choice (sub-$10k used cars, annual cost / reliability, Fort Worth gig mix) — **not** by adding more SerpAPI steps as the main intelligence strategy.
+
+### Path (current → grow → optional train)
+
+1. **Domain pack (now):** `domain/gig-vehicle.md` + `domain/gigVehicle.js`
+   - Injected knowledge-first into system/synth for gig/vehicle advice.
+   - Covers TCO buckets, Prius gens/battery caveats (principles), Corolla/Civic/Accord, DFW heat/stop-go, cargo van vs car for food vs Roadie/Flex.
+2. **Durable memory:** `memory.json` in Electron userData — platforms, cargo van, sub-$10k evaluation, location, preferences. Grows from real sessions via `learnFromUserMessage`.
+3. **Knowledge-first vs verify-tools**
+   - **General advice** (best car under budget, reliability rank, van vs car): answer from pack + memory; plan tool = `domain` (no multi-search blast).
+   - **Verification** (recall, NHTSA, prices, listings, insurance quotes, challenging a prior pick): `needsFactualRefresh` → force `search` (+ news when useful). Anti-hallucination: never invent listings/prices/campaign IDs.
+4. **Grow the brain from good sessions:** after strong answers Blake endorses, fold durable corrections/preferences into memory; periodically expand `gig-vehicle.md` with hardened heuristics (still no fake live facts).
+5. **Optional later:** Ollama Modelfile system glue, or a small LoRA/adapter trained on curated Q&A from this pack + anonymized good sessions — only after the pack + memory loop is stable.
+
+### De-emphasized
+
+- "More web search steps" as the default way to sound smart on this subject.
+- Inventing Alliance listings / NHTSA IDs when tools were skipped.
+
 
 ## Completed
 
@@ -68,7 +95,8 @@ Standalone research assistant (Electron + Ollama). Design Webber owns this repo 
 - Local search (businesses / Fort Worth)
 - Streaming replies
 - Conversation memory
-- Multi-step tool use (search + news + synthesize planner)
+- Multi-step tool use for **verification** (recalls/prices) — not the primary specialist brain
+- Grow `domain/gig-vehicle.md` from endorsed sessions; optional Modelfile/LoRA later
 - Optional xAI provider adapter behind askOllama
 
 ## Later / ideas

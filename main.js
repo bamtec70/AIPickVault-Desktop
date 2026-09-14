@@ -7,10 +7,11 @@ const {
   getStock,
   webSearch
 } = require("./tools");
-const { routeMessage } = require("./router");
+const { routeMessage, needsFactualRefresh } = require("./router");
 const { runResearchLoop, planTools, formatNewsResults } = require("./researchLoop");
 const sessionLog = require("./sessionLog");
 const { createDurableMemory } = require("./durableMemory");
+const { shouldUseKnowledgeFirst, domainPackPromptSection } = require("./domain/gigVehicle");
 
 /** Durable facts across sessions (userData/memory.json). */
 let durableMemory = null;
@@ -39,9 +40,17 @@ Identity
 Reasoning (Grok-like, as far as local models allow)
 - Think through tradeoffs before answering. Challenge weak or irrelevant sources.
 - Prefer a coherent, decisive recommendation over tool-meta, apologies, or "I couldn't find…".
-- When advising Blake: he does last-mile gig delivery (DoorDash / Uber / similar), often high miles, city stop-go, cargo — Fort Worth / Alliance (76177). Use durable memory facts when present.
+- When advising Blake: he does last-mile gig delivery (DoorDash, Uber, Uber Eats, Roadie, Amazon Flex, Shipt), maintains a cargo van, and is also evaluating a sub-$10k car for food/gig delivery — Fort Worth / Alliance (76177). Use durable memory facts when present.
 - For cars and gear: rank by overall annual cost, reliability, and maintenance for HIS use — not badge prestige.
-- Never invent URLs, live prices, or fake AAA/insurance statistics.
+- Be honest about uncertainty.
+
+Anti-hallucination (critical)
+- Never invent specific for-sale cars, VINs, dealer inventory, sticker/asking prices, or "verified at dealer" claims.
+- Never invent listing URLs (Autotrader, Cars.com, CarGurus, etc.). Only cite URLs/titles that appear in tool results; otherwise tell him to check Autotrader/Cars.com filters for Fort Worth / Alliance.
+- Label estimates clearly vs sourced facts. In research answers, a short "Sourced vs estimate" line is welcome.
+- Do not invent NHTSA recall campaign IDs unless present in tool text; if unsure, search first (do not guess).
+- Do not double-count cost buckets (e.g. tires listed twice under maintenance and tires).
+- Never invent fake AAA/insurance statistics or live prices not present in tool results.
 - Never label mainstream US-market cars as "foreign imports to avoid."
 
 Style
@@ -139,6 +148,8 @@ function hasStrongNewToolTarget(message, route) {
     }
   }
 
+  if (needsFactualRefresh(text)) return true;
+
   if (route.intent === "search" && /^(search|look\s*up|lookup|find|google)\b/i.test(text)) {
     return true;
   }
@@ -154,8 +165,54 @@ function hasStrongNewToolTarget(message, route) {
   return false;
 }
 
+/**
+ * Mid-conversation factual asks (recall, NHTSA, price, listing, insurance,
+ * availability, or challenging a prior pick) must re-run search — never pure chat.
+ */
+function forceToolRefreshRoute(message, route) {
+  if (!needsFactualRefresh(message)) return route;
+  const text = String(message || "").trim();
+  const lower = text.toLowerCase();
+  const tools = ["search"];
+  if (/\b(recall|nhtsa|latest|today|breaking|news)\b/i.test(lower)) {
+    tools.push("news");
+  }
+
+  if (route && route.intent && route.intent !== "chat") {
+    const prev = (route.payload && Array.isArray(route.payload.tools) && route.payload.tools.length)
+      ? route.payload.tools.slice()
+      : [];
+    const merged = Array.from(new Set(prev.concat(tools)));
+    console.log("FORCE_TOOL_REFRESH → keep", route.intent, "tools:", merged.join(","));
+    return {
+      ...route,
+      payload: {
+        ...(route.payload || {}),
+        tools: merged,
+        forceToolRefresh: true,
+        query: (route.payload && route.payload.query) || text
+      }
+    };
+  }
+
+  console.log("FORCE_TOOL_REFRESH → search tools:", tools.join(","));
+  return {
+    intent: "search",
+    payload: {
+      query: text,
+      tools,
+      forceToolRefresh: true,
+      wantsRecommendation: !!(route && route.payload && route.payload.wantsRecommendation)
+    }
+  };
+}
+
 function maybePreferChatHistory(message, route) {
   if (conversationHistory.length === 0) return route;
+  // Factual refresh follow-ups must re-run tools, never demote to pure chat.
+  if (needsFactualRefresh(message)) {
+    return forceToolRefreshRoute(message, route);
+  }
   if (!looksLikeFollowUp(message)) return route;
   if (hasStrongNewToolTarget(message, route)) return route;
   console.log(
@@ -364,7 +421,12 @@ async function askOllama(prompt, model = "qwen3:30b", onChunk, opts) {
   const includeHistory = !opts || opts.includeHistory !== false;
   const think = !!(opts && opts.think);
   const memSuffix = getDurableMemory().buildSystemSuffix();
-  const messages = [{ role: "system", content: SYSTEM_PROMPT + memSuffix }];
+  let system = SYSTEM_PROMPT + memSuffix;
+  // Knowledge-first: inject local gig-vehicle pack for courier/vehicle advice turns.
+  if (shouldUseKnowledgeFirst(String(prompt || ""), null)) {
+    system += domainPackPromptSection();
+  }
+  const messages = [{ role: "system", content: system }];
   if (includeHistory && conversationHistory.length) {
     for (const m of conversationHistory) {
       messages.push({ role: m.role, content: m.content });
@@ -622,6 +684,7 @@ ipcMain.handle("ask-model", async (event, data) => {
 
     let route = routeMessage(message);
     route = maybePreferChatHistory(message, route);
+    route = forceToolRefreshRoute(message, route);
     console.log("ROUTE:", JSON.stringify(route));
     sessionLog.route(route);
     console.log(
@@ -698,6 +761,16 @@ ipcMain.handle("ask-model", async (event, data) => {
 
 app.whenReady().then(() => {
   durableMemory = createDurableMemory(() => app.getPath("userData"));
+  try {
+    if (typeof durableMemory.ensureSeedProfile === "function") {
+      const seeded = durableMemory.ensureSeedProfile();
+      if (seeded && seeded.added && seeded.added.length) {
+        sessionLog.info("MEMORY_SEED", seeded.added.join(", "));
+      }
+    }
+  } catch (seedErr) {
+    console.error("durable memory seed error:", seedErr);
+  }
   console.log("Durable memory ->", durableMemory.memoryPath());
   sessionLog.info("DURABLE_MEMORY", durableMemory.memoryPath());
   const logPath = sessionLog.getLogPath();

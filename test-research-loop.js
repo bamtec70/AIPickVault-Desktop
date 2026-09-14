@@ -142,7 +142,7 @@ assert.strictEqual(
   assert.match(rw.primary, /computing/i);
 }
 
-// --- Recommendation multi-step: ≥3 when cost/reliability ---
+// --- Knowledge-first: gig/vehicle advice uses domain pack (not multi-search) ---
 {
   const door =
     "Since I drive for Doordash, Uber, and other last mile gig delivery platforms, I need to know the best car to use that's under $10000. I'm looking at overall annual costs to run the vehicle along with reliability and maintenance.";
@@ -150,33 +150,51 @@ assert.strictEqual(
   assert.strictEqual(route.intent, "search");
   assert.strictEqual(route.payload.wantsRecommendation, true);
   assert.ok(
-    plan.length >= 3,
-    `cost/reliability gig rec should plan ≥3 steps, got ${plan.length}: ${describePlan(plan)}`
+    plan.some((s) => s.tool === "domain"),
+    `gig rec should be knowledge-first (domain pack), got: ${describePlan(plan)}`
   );
-  assert.ok(plan.filter((s) => s.tool === "search").length >= 2);
-  const queries = plan.filter((s) => s.tool === "search").map((s) => s.args.query);
-  const blob = queries.join(" ");
-  assert.match(blob, /10000/);
-  assert.match(blob, /DoorDash|Uber|reliab|ownership|maintenance|mileage/i);
-  assert.ok(!/^Since I drive/i.test(queries[0]));
-  assert.ok(!/Since drive Doordash/i.test(blob));
+  assert.ok(
+    !plan.some((s) => s.tool === "search"),
+    "general gig advice should NOT blast SerpAPI — pack first"
+  );
 }
 
 {
   const door = "What's the best car to use for Doordash and Uber Eats that's under $10000?";
   const { route, plan } = planFor(door);
   assert.strictEqual(route.payload.wantsRecommendation, true);
-  assert.ok(plan.length >= 2);
-  assert.ok(plan.filter((s) => s.tool === "search").length >= 2);
-  const q0 = plan[0].args.query;
-  assert.ok(q0.length < door.length);
-  assert.ok(!/^What's the best/i.test(q0));
-  assert.match(q0, /car|DoorDash|used|10000/i);
+  assert.ok(plan.some((s) => s.tool === "domain"));
+  assert.ok(!plan.some((s) => s.tool === "search"));
 }
 
 {
+  // Non-vehicle budget rec can still use multi search
   const { plan } = planFor("best used laptop under $500");
-  assert.ok(plan.length >= 2, "budget recommendation needs ≥2 steps");
+  assert.ok(plan.length >= 1, "budget recommendation needs a plan");
+  assert.ok(plan.some((s) => s.tool === "search"));
+}
+
+// --- Verification follow-ups FORCE search (recall / price / listing) ---
+{
+  const recall = "Did you consider what generation of Prius and battery recall?";
+  const { route, plan } = planFor(recall);
+  assert.strictEqual(route.intent, "search", "recall follow-up must be search not chat");
+  assert.ok(route.payload.forceToolRefresh || plan.some((s) => s.tool === "search"));
+  assert.ok(plan.some((s) => s.tool === "search"), "must run search for NHTSA/recall verify");
+  assert.ok(!plan.some((s) => s.tool === "domain"), "verification is tools, not domain-only");
+}
+{
+  const q = "what about Prius battery recall?";
+  const { route, plan } = planFor(q);
+  assert.strictEqual(route.intent, "search");
+  assert.ok(plan.some((s) => s.tool === "search"));
+  assert.ok(plan.some((s) => s.tool === "news") || plan.filter((s) => s.tool === "search").length >= 1);
+}
+{
+  const q = "insurance quote for a used Prius in Fort Worth";
+  const { route, plan } = planFor(q);
+  assert.strictEqual(route.intent, "search");
+  assert.ok(plan.some((s) => s.tool === "search"));
 }
 
 // --- Synthesis prompt: forbid leading with no-tool-results meta ---
@@ -201,12 +219,46 @@ assert.strictEqual(
   );
   assert.match(prompt, /NEVER open with/i);
   assert.match(prompt, /No tool results/i);
-  assert.match(prompt, /Never invent URLs/i);
+  assert.match(prompt, /Never invent URLs|invent listing/i);
   assert.match(prompt, /Best Choice|Best pick/i);
   assert.match(prompt, /Fort Worth|76177/i);
   assert.match(prompt, /foreign imports to avoid/i);
   assert.match(prompt, /tradeoff|Think hard|Challenge weak/i);
+  assert.match(prompt, /Sourced vs estimate|estimates clearly/i);
+  assert.match(prompt, /NHTSA|recall campaign/i);
+  assert.match(prompt, /double-count|tires twice/i);
+  assert.match(prompt, /for-sale|verified at dealer|Autotrader|Cars\.com/i);
+  assert.match(prompt, /domain knowledge pack|Knowledge-first/i);
   assert.ok(!/Use ONLY facts present/i.test(prompt));
+}
+
+// Domain pack loads and covers specialist topics
+{
+  const { loadGigVehicleDomainPack, shouldUseKnowledgeFirst } = require("./domain/gigVehicle");
+  const { needsFactualRefresh } = require("./router");
+  const pack = loadGigVehicleDomainPack();
+  assert.match(pack, /Prius/i);
+  assert.match(pack, /Corolla|Civic/i);
+  assert.match(pack, /cargo van/i);
+  assert.match(pack, /annual cost|Fuel|Insurance|Maintenance|Tires/i);
+  assert.match(pack, /Never invent NHTSA|never invent/i);
+  assert.strictEqual(shouldUseKnowledgeFirst("best car for DoorDash under $10000", { intent: "search", payload: { wantsRecommendation: true } }), true);
+  assert.strictEqual(needsFactualRefresh("what about Prius battery recall?"), true);
+  assert.strictEqual(shouldUseKnowledgeFirst("what about Prius battery recall?", { intent: "search", payload: { forceToolRefresh: true } }), false);
+}
+
+// Durable memory seed profile
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aipick-seed-"));
+  const mem = createDurableMemory(() => tmp);
+  const seeded = mem.ensureSeedProfile();
+  assert.ok(seeded.added.length >= 1);
+  const snap = mem.getSnapshot();
+  assert.ok(snap.work.platforms.includes("Roadie"));
+  assert.ok(snap.work.platforms.includes("Amazon Flex"));
+  assert.ok(snap.work.vehicleNotes.some((v) => /cargo van/i.test(v)));
+  assert.ok(snap.work.vehicleNotes.some((v) => /10k|10000/i.test(v)));
+  fs.rmSync(tmp, { recursive: true, force: true });
 }
 
 // Rank demotes app-store spam

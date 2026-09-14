@@ -110,4 +110,14 @@ expectIntent("What's your primary function?", "chat");
 // stock ticker beats weather when both could match
 expectIntent("AAPL", "stock");
 
+// Factual refresh follow-ups (must not fall through to chat)
+expectIntent("Did you consider what generation of Prius and battery recall?", "search", (r) => {
+  assert.ok(r.payload.tools.includes("search"));
+  assert.ok(r.payload.forceToolRefresh || r.payload.tools.includes("news"));
+});
+expectIntent("what about Prius battery recall?", "search", (r) => {
+  assert.ok(r.payload.tools.includes("search"));
+});
+expectIntent("insurance quote for a used Prius", "search");
+
 console.log("All router tests passed.");

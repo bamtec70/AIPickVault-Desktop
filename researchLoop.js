@@ -1,5 +1,12 @@
 "use strict";
 
+const {
+  shouldUseKnowledgeFirst,
+  domainPackPromptSection,
+  loadGigVehicleDomainPack
+} = require("./domain/gigVehicle");
+const { needsFactualRefresh } = require("./router");
+
 /**
  * Multi-step research agent loop for AIPickVault Desktop.
  *
@@ -120,6 +127,16 @@ function rewriteSearchQuery(message, opts) {
     wantsRec;
 
   const queries = [];
+
+  // Recall / NHTSA / battery follow-ups — tight factual queries first
+  if (/\b(recall|nhtsa)\b/i.test(text) || (/\bbattery\b/i.test(text) && /\b(prius|toyota|hybrid|generation)\b/i.test(text))) {
+    const modelBit = (text.match(/\b(prius|corolla|civic|camry|accord|rav4|sienna)\b/i) || [])[0] || "used car";
+    queries.push(`${modelBit} hybrid battery recall NHTSA`);
+    queries.push(`${modelBit} generations years battery recall affected`);
+    if (/\bgeneration\b/i.test(text)) {
+      queries.push(`Toyota Prius gen 2 gen 3 gen 4 hybrid battery reliability`);
+    }
+  }
 
   if ((wantsRec || looksLikeEssay) && (vehicle || gig.isGig)) {
     const platformBit =
@@ -274,7 +291,20 @@ function planTools(route, message) {
     const rewritten = rewriteSearchQuery(rawQuery, { wantsRecommendation: wantsRec });
     const queryList = rewritten.queries.length ? rewritten.queries.slice() : [rewritten.primary || rawQuery];
     const costRel = hasCostReliabilityLanguage(rawQuery) || hasCostReliabilityLanguage(text);
-    const multiAngle = wantsRec && (costRel || rewritten.gig.isGig || isVehicleAsk(rawQuery));
+    const forceRefresh = !!payload.forceToolRefresh || needsFactualRefresh(text);
+    const knowledgeFirst = shouldUseKnowledgeFirst(text, route) || shouldUseKnowledgeFirst(rawQuery, route);
+    // Knowledge-first: general gig/vehicle advice uses local domain pack — no multi-search blast.
+    // Verification (recall/NHTSA/price/listing/insurance) still forces tools below.
+    if (knowledgeFirst && !forceRefresh) {
+      return [{
+        id: "domain",
+        tool: "domain",
+        label: "Gig-vehicle domain pack",
+        args: {},
+        knowledgeFirst: true
+      }];
+    }
+    const multiAngle = !knowledgeFirst && wantsRec && (costRel || rewritten.gig.isGig || isVehicleAsk(rawQuery));
 
     if (toolsHint.includes("search") || toolsHint.length === 0) {
       const primary = queryList[0] || rawQuery;
@@ -432,6 +462,9 @@ function dedupeWebResults(list) {
 async function executeStep(step, toolFns) {
   const { tool, args } = step;
   try {
+    if (tool === "domain") {
+      return { ok: true, kind: "domain", data: loadGigVehicleDomainPack() };
+    }
     if (tool === "search") {
       const result = await toolFns.webSearch(args.query);
       if (isToolError(result)) return { ok: false, kind: "web", data: [], error: result && result.error };
@@ -461,7 +494,9 @@ async function executeStep(step, toolFns) {
 }
 
 function mergeStepResult(bag, step, outcome) {
-  if (outcome.kind === "web") {
+  if (outcome.kind === "domain") {
+    bag.domainPack = outcome.data || loadGigVehicleDomainPack();
+  } else if (outcome.kind === "web") {
     if (step.mergeWeb && Array.isArray(bag.web) && bag.web.length) {
       bag.web = dedupeWebResults(bag.web.concat(outcome.data || []));
     } else {
@@ -496,8 +531,11 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
   parts.push(`Hard rules:`);
   parts.push(`- NEVER open with "No tool results…", "Sources focus on…", "The tool results do not provide…", "All cited sources…", or "best-effort guidance (based on general knowledge, not sources)". Lead with the pick.`);
   parts.push(`- Lead with a direct recommendation ranked by overall annual cost, reliability, and maintenance for high-mileage gig/courier use.`);
-  parts.push(`- Cite useful real titles + exact links from the lists below. Never invent URLs or fake AAA/insurance stats.`);
-  parts.push(`- Rough annual cost buckets (fuel, insurance, maintenance, tires) OK if labeled estimates with uncertainty. No fake precision.`);
+  parts.push(`- Cite ONLY titles + exact links that appear in the tool lists below. Never invent URLs, Autotrader/Cars.com listing links, or fake AAA/insurance stats.`);
+  parts.push(`- Never invent specific for-sale cars, VINs, dealer inventory, asking prices, or "verified at dealer" claims. If no live listings are in tool results, say to check Autotrader/Cars.com filters for Fort Worth / Alliance (76177).`);
+  parts.push(`- Label estimates clearly vs sourced facts. Include a short "Sourced vs estimate" line when mixing both.`);
+  parts.push(`- Do not invent NHTSA recall campaign IDs unless present in tool text; if unsure, say so and rely on what the sources show.`);
+  parts.push(`- Rough annual cost buckets (fuel, insurance, maintenance, tires) OK if labeled estimates with uncertainty. No fake precision. Do NOT double-count buckets (e.g. tires twice).`);
   parts.push(`- If sources are thin/spammy, still advise like a decisive courier-aware local using solid US used-car knowledge. Do not apologize about tools.`);
   parts.push(`- Ban nonsense: do NOT call mainstream US-market cars (Honda, Toyota, Hyundai, Kia, etc.) "foreign imports to avoid." Judge reliability, parts cost, MPG.`);
   parts.push(`- No raw JSON. Short structured sections.`);
@@ -514,6 +552,12 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
       parts.push(`- Rank on annual running cost, reliability, maintenance — not badge prestige.`);
     }
     parts.push(`- Best Choice / Runner Up / Third Choice (Avoid only for truly bad gig picks: thirsty trucks, project cars).`);
+  }
+
+  if (vehicle || gig.isGig || wantsRecommendation || bag.domainPack) {
+    parts.push(``);
+    parts.push(`Knowledge-first mode: reason from the local domain pack + durable memory first. Use tool results only to verify live facts (recalls, prices, listings, insurance). Do not invent listings.`);
+    parts.push(domainPackPromptSection());
   }
 
   parts.push(``);
@@ -577,10 +621,10 @@ async function runResearchLoop(opts) {
   const skipSynthesize = !!opts.skipSynthesize;
 
   if (!steps.length) {
-    return { text: "", model, plan: [], bag: { web: null, news: null, stocks: {}, weather: null, errors: [] }, skipped: true };
+    return { text: "", model, plan: [], bag: { web: null, news: null, stocks: {}, weather: null, domainPack: null, errors: [] }, skipped: true };
   }
 
-  const bag = { web: null, news: null, stocks: {}, weather: null, errors: [] };
+  const bag = { web: null, news: null, stocks: {}, weather: null, domainPack: null, errors: [] };
 
   for (const s of steps) {
     if (s.queryMeta && s.queryMeta.wasRewritten) {
@@ -632,7 +676,8 @@ async function runResearchLoop(opts) {
       mergeStepResult(bag, s, outcome);
 
       if (outcome.ok) {
-        if (outcome.kind === "web") stream.note(`Found ${outcome.data.length} web result${outcome.data.length === 1 ? "" : "s"}.`);
+        if (outcome.kind === "domain") stream.note("Domain pack loaded (knowledge-first — tools only if verification needed).");
+        else if (outcome.kind === "web") stream.note(`Found ${outcome.data.length} web result${outcome.data.length === 1 ? "" : "s"}.`);
         else if (outcome.kind === "news") stream.note(`Found ${outcome.data.length} headline${outcome.data.length === 1 ? "" : "s"}.`);
         else if (outcome.kind === "stock" && outcome.data && outcome.data.price != null) {
           stream.note(`${outcome.symbol}: $${outcome.data.price}` + (outcome.data.changePercent != null ? ` (${outcome.data.changePercent})` : ""));
@@ -683,7 +728,8 @@ async function runResearchLoop(opts) {
   const citations = countCitations(bag);
   const hasStock = bag.stocks && Object.keys(bag.stocks).some((k) => bag.stocks[k] && !bag.stocks[k].error);
   const hasWeather = bag.weather && !bag.weather.error;
-  const hasAny = citations > 0 || hasStock || hasWeather;
+  const hasDomain = !!(bag.domainPack && String(bag.domainPack).length > 40);
+  const hasAny = citations > 0 || hasStock || hasWeather || hasDomain;
 
   if (skipSynthesize) return { text: "", model, plan: steps, bag, gathered: true };
 
@@ -712,5 +758,6 @@ module.exports = {
   planTools, runResearchLoop, formatWebResults, formatNewsResults, refineNewsTopic,
   describePlan, rewriteSearchQuery, rewriteNewsTopic, resultsSeemThinOrOffTopic,
   buildSynthesisPrompt, extractBudget, extractGigUseCase, extractCriteria,
-  hasCostReliabilityLanguage, rankWebResultsForSynth, scoreWebResultForSynth, MAX_STEPS
+  hasCostReliabilityLanguage, rankWebResultsForSynth, scoreWebResultForSynth, MAX_STEPS,
+  shouldUseKnowledgeFirst
 };
