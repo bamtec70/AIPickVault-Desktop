@@ -120,6 +120,31 @@
         word-break: break-word;
       }
 
+      .ai-msg .stream-note {
+        display: block;
+        opacity: 0.75;
+        font-size: 0.92em;
+        margin-bottom: 8px;
+        color: #88ffcc;
+      }
+
+      .ai-msg .stream-body {
+        display: block;
+      }
+
+      .ai-msg.thinking .stream-body::before {
+        content: "thinking…";
+        opacity: 0.55;
+        font-style: italic;
+        letter-spacing: 0.02em;
+        animation: thinkPulse 1.4s ease-in-out infinite;
+      }
+
+      @keyframes thinkPulse {
+        0%, 100% { opacity: 0.35; }
+        50% { opacity: 0.75; }
+      }
+
       .typing {
         display: flex;
         gap: 6px;
@@ -192,6 +217,12 @@
         border-color: #00ffaa;
         box-shadow: 0 0 15px #00ffaa;
       }
+
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+        box-shadow: none;
+      }
     </style>
 </head>
 <body>
@@ -237,6 +268,8 @@
     const modelDisplay = document.getElementById('modelDisplay');
     const modelSelect = document.getElementById('modelSelect');
 
+    let isStreaming = false;
+
     const WELCOME_TEXT =
         "Welcome to AIPickVault Desktop\n\n" +
         "Available Tools:\n\n" +
@@ -275,12 +308,7 @@
         return row;
     }
 
-    function showWelcome() {
-        chat.replaceChildren();
-        appendMessage('ai', WELCOME_TEXT);
-    }
-
-    function createTypingIndicator() {
+    function createStreamingBubble() {
         const row = document.createElement('div');
         row.className = 'msg-row';
 
@@ -288,24 +316,80 @@
         avatar.className = 'avatar ai';
         avatar.textContent = 'AI';
 
-        const typing = document.createElement('div');
-        typing.className = 'typing';
-        for (let i = 0; i < 3; i++) {
-            const dot = document.createElement('div');
-            dot.className = 'dot';
-            typing.appendChild(dot);
-        }
+        const bubble = document.createElement('div');
+        bubble.className = 'msg ai-msg thinking';
+
+        const noteEl = document.createElement('span');
+        noteEl.className = 'stream-note';
+        noteEl.hidden = true;
+
+        const bodyEl = document.createElement('span');
+        bodyEl.className = 'stream-body';
+
+        bubble.appendChild(noteEl);
+        bubble.appendChild(bodyEl);
 
         row.appendChild(avatar);
-        row.appendChild(typing);
+        row.appendChild(bubble);
         chat.appendChild(row);
         chat.scrollTop = chat.scrollHeight;
-        return row;
+
+        return {
+            row,
+            bubble,
+            noteEl,
+            bodyEl,
+            text: '',
+            hasToken: false,
+            setNote(note) {
+                if (!note) return;
+                noteEl.hidden = false;
+                noteEl.textContent = note;
+                chat.scrollTop = chat.scrollHeight;
+            },
+            appendChunk(chunk) {
+                if (!chunk) return;
+                if (!this.hasToken) {
+                    this.hasToken = true;
+                    bubble.classList.remove('thinking');
+                    this.text = '';
+                }
+                this.text += chunk;
+                bodyEl.textContent = this.text;
+                chat.scrollTop = chat.scrollHeight;
+            },
+            setFinal(text) {
+                bubble.classList.remove('thinking');
+                this.text = text == null ? '' : String(text);
+                bodyEl.textContent = this.text;
+                chat.scrollTop = chat.scrollHeight;
+            },
+            setError(text) {
+                bubble.classList.remove('thinking');
+                noteEl.hidden = true;
+                this.text = text == null ? '' : String(text);
+                bodyEl.textContent = this.text;
+                chat.scrollTop = chat.scrollHeight;
+            }
+        };
+    }
+
+    function showWelcome() {
+        chat.replaceChildren();
+        appendMessage('ai', WELCOME_TEXT);
+    }
+
+    function setStreaming(active) {
+        isStreaming = !!active;
+        sendBtn.disabled = isStreaming;
+        userInput.disabled = isStreaming;
     }
 
     showWelcome();
 
     async function sendMessage() {
+        if (isStreaming) return;
+
         const message = userInput.value.trim();
         if (!message) return;
 
@@ -314,7 +398,56 @@
         appendMessage('user', message);
         userInput.value = '';
 
-        const typingRow = createTypingIndicator();
+        const streamUi = createStreamingBubble();
+        setStreaming(true);
+
+        let finished = false;
+        const unsubs = [];
+
+        const finish = () => {
+            if (finished) return;
+            finished = true;
+            unsubs.forEach((fn) => {
+                try { fn(); } catch (_) {}
+            });
+            setStreaming(false);
+        };
+
+        if (window.api && typeof window.api.onAskModelNote === 'function') {
+            unsubs.push(window.api.onAskModelNote((payload) => {
+                if (finished) return;
+                streamUi.setNote(payload && payload.text);
+            }));
+        }
+        if (window.api && typeof window.api.onAskModelChunk === 'function') {
+            unsubs.push(window.api.onAskModelChunk((payload) => {
+                if (finished) return;
+                streamUi.appendChunk(payload && payload.chunk);
+            }));
+        }
+        if (window.api && typeof window.api.onAskModelDone === 'function') {
+            unsubs.push(window.api.onAskModelDone((payload) => {
+                if (finished) return;
+                if (payload && payload.model) {
+                    modelDisplay.textContent = 'Model: ' + payload.model;
+                }
+                if (!streamUi.hasToken && payload && payload.text) {
+                    streamUi.setFinal(payload.text);
+                }
+                finish();
+            }));
+        }
+        if (window.api && typeof window.api.onAskModelError === 'function') {
+            unsubs.push(window.api.onAskModelError((payload) => {
+                if (finished) return;
+                streamUi.setError(
+                    (payload && payload.text) ||
+                    'Something went wrong talking to the assistant. Please try again.'
+                );
+                modelDisplay.textContent = 'Model: Error';
+                finish();
+            }));
+        }
 
         try {
             const response = await window.api.askModel({
@@ -322,15 +455,27 @@
                 model: selectedModel
             });
 
-            modelDisplay.textContent = 'Model: ' + (response.model || selectedModel);
-            typingRow.remove();
-            appendMessage('ai', response.text || 'No response received.');
+            if (response && response.model) {
+                modelDisplay.textContent = 'Model: ' + response.model;
+            }
+
+            // If events already finished the UI, just clean up.
+            // Otherwise fill from invoke result (non-stream / static replies).
+            if (!finished) {
+                if (!streamUi.hasToken) {
+                    streamUi.setFinal(
+                        (response && response.text) || 'No response received.'
+                    );
+                }
+                finish();
+            }
         } catch (err) {
-            typingRow.remove();
-            appendMessage(
-                'ai',
-                'Something went wrong talking to the assistant. Please try again.'
-            );
+            if (!finished) {
+                streamUi.setError(
+                    'Something went wrong talking to the assistant. Please try again.'
+                );
+                finish();
+            }
             console.error(err);
         }
     }
@@ -345,6 +490,7 @@
 
     if (clearBtn) {
         clearBtn.addEventListener('click', () => {
+            if (isStreaming) return;
             chat.replaceChildren();
             appendMessage('ai', 'Chat cleared.');
         });
