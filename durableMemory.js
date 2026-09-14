@@ -231,6 +231,9 @@ function createDurableMemory(getUserDataPath) {
       lines.push("Corrections / what NOT to do again:");
       for (const c of mem.corrections.slice(-6)) lines.push(`- ${c}`);
     }
+    lines.push(
+      "Capability note: the facts above are context about Blake — they do NOT limit you to vehicle-only answers. You still handle weather, news, stocks, web search, webpage review, and general chat. Never claim you cannot view websites when a fetch tool/result is available."
+    );
     if (lines.length <= 1) return "";
     return "\n\n" + lines.join("\n");
   }

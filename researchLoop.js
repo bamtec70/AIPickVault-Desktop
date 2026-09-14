@@ -281,6 +281,17 @@ function planTools(route, message) {
     return steps.slice(0, MAX_STEPS);
   }
 
+  if (intent === "fetch") {
+    const url = payload.url || (Array.isArray(payload.urls) && payload.urls[0]) || null;
+    steps.push({
+      id: "fetch",
+      tool: "fetch",
+      label: "Fetch webpage",
+      args: { url }
+    });
+    return steps.slice(0, MAX_STEPS);
+  }
+
   if (intent === "news") {
     steps.push({ id: "news", tool: "news", label: "News", args: { topic: rewriteNewsTopic(payload.topic || "technology") } });
     return steps.slice(0, MAX_STEPS);
@@ -481,6 +492,14 @@ async function executeStep(step, toolFns) {
       if (isToolError(result)) return { ok: false, kind: "stock", data: result, error: result && result.error };
       return { ok: true, kind: "stock", data: result, symbol: args.symbol };
     }
+    if (tool === "fetch") {
+      if (typeof toolFns.fetchWebpage !== "function") {
+        return { ok: false, kind: "page", data: null, error: "fetchWebpage not available" };
+      }
+      const result = await toolFns.fetchWebpage(args.url);
+      if (isToolError(result)) return { ok: false, kind: "page", data: result, error: result && result.error };
+      return { ok: true, kind: "page", data: result };
+    }
     if (tool === "weather") {
       const result = await toolFns.getWeather(args.location);
       if (isToolError(result)) return { ok: false, kind: "weather", data: result, error: result && result.error };
@@ -489,7 +508,7 @@ async function executeStep(step, toolFns) {
     return { ok: false, kind: "unknown", data: null, error: `Unknown tool: ${tool}` };
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
-    return { ok: false, kind: tool, data: tool === "stock" || tool === "weather" ? null : [], error: msg };
+    return { ok: false, kind: tool, data: tool === "stock" || tool === "weather" || tool === "fetch" ? null : [], error: msg };
   }
 }
 
@@ -508,6 +527,8 @@ function mergeStepResult(bag, step, outcome) {
     bag.stocks = bag.stocks || {};
     const sym = outcome.symbol || (step.args && step.args.symbol) || "UNKNOWN";
     bag.stocks[sym] = outcome.data;
+  } else if (outcome.kind === "page") {
+    bag.page = outcome.data;
   } else if (outcome.kind === "weather") {
     bag.weather = outcome.data;
   }
@@ -516,7 +537,77 @@ function mergeStepResult(bag, step, outcome) {
   }
 }
 
+function buildWeatherSynthesisPrompt(message, bag) {
+  const parts = [];
+  parts.push(`You are AIPickVault Desktop — a general local research assistant. Summarize the weather clearly for Blake.`);
+  parts.push(`Hard rules:`);
+  parts.push(`- Lead with current conditions and today's high/low.`);
+  parts.push(`- Mention tomorrow if present.`);
+  parts.push(`- Use ONLY the weather data below; do not invent numbers.`);
+  parts.push(`- Do NOT claim you are a vehicle-only assistant. Do not mention cars, gig delivery, or domain packs.`);
+  parts.push(`- No raw JSON. Short structured sections.`);
+  parts.push(``);
+  parts.push(`User question:`);
+  parts.push(message);
+  parts.push(``);
+  parts.push(`Intent: weather`);
+  if (bag.weather) {
+    parts.push(``);
+    parts.push(`Weather data:`);
+    parts.push(JSON.stringify(bag.weather, null, 2));
+  }
+  if (bag.errors && bag.errors.length) {
+    parts.push(``);
+    parts.push(`Tool notes:`);
+    for (const e of bag.errors) parts.push(`- ${e.tool}: ${e.error}`);
+  }
+  return parts.join("\n");
+}
+
+function buildFetchSynthesisPrompt(message, bag) {
+  const parts = [];
+  parts.push(`You are AIPickVault Desktop — a general local research assistant. Review the fetched webpage for Blake.`);
+  parts.push(`Hard rules:`);
+  parts.push(`- You CAN view/analyze websites when page content is provided below. Never say you cannot view websites.`);
+  parts.push(`- Give real design/content feedback: clarity, tone, structure, trust signals, CTAs, what works / what to improve.`);
+  parts.push(`- Base feedback on the extracted title + text. If text is thin or fetch failed, say so clearly.`);
+  parts.push(`- Do NOT claim you are limited to vehicle recommendations, cost/maintenance analysis, or research-only vehicle advice.`);
+  parts.push(`- Do not invent quotes or sections that are not in the extracted text.`);
+  parts.push(`- No raw JSON. Short structured sections.`);
+  parts.push(``);
+  parts.push(`User question:`);
+  parts.push(message);
+  parts.push(``);
+  parts.push(`Intent: fetch`);
+  if (bag.page) {
+    parts.push(``);
+    if (bag.page.error) {
+      parts.push(`Fetch failed: ${bag.page.error}`);
+      if (bag.page.url) parts.push(`URL: ${bag.page.url}`);
+    } else {
+      parts.push(`Fetched page:`);
+      parts.push(`URL: ${bag.page.finalUrl || bag.page.url || "(unknown)"}`);
+      if (bag.page.title) parts.push(`Title: ${bag.page.title}`);
+      if (bag.page.truncated) parts.push(`(Extract truncated for size.)`);
+      parts.push(`Extracted text:`);
+      parts.push(String(bag.page.text || "").slice(0, 10000));
+    }
+  } else {
+    parts.push(``);
+    parts.push(`No page content was retrieved.`);
+  }
+  if (bag.errors && bag.errors.length) {
+    parts.push(``);
+    parts.push(`Tool notes:`);
+    for (const e of bag.errors) parts.push(`- ${e.tool}: ${e.error}`);
+  }
+  return parts.join("\n");
+}
+
 function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
+  if (intent === "weather") return buildWeatherSynthesisPrompt(message, bag);
+  if (intent === "fetch") return buildFetchSynthesisPrompt(message, bag);
+
   const parts = [];
   const gig = extractGigUseCase(message);
   const criteria = extractCriteria(message);
@@ -524,6 +615,7 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
   const vehicle = isVehicleAsk(message);
 
   parts.push(`You are a sharp local advisor for Blake in the Fort Worth / Alliance area (76177), Texas. Think hard, then answer decisively.`);
+  parts.push(`You are a general local research assistant — NOT vehicle-only. Gig/vehicle specialist framing applies only because this turn is about that subject.`);
   parts.push(`Reasoning (do this mentally; do NOT dump chain-of-thought as the reply):`);
   parts.push(`- Weigh tradeoffs for HIS situation (high miles, city stop-go, cargo, Texas heat/insurance) — not generic brochure talk.`);
   parts.push(`- Challenge weak evidence: app-store pages, wrong-country hits, luxury rideshare flex posts, incomplete snippets.`);
@@ -541,7 +633,7 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
     parts.push(`- PACK-ONLY turn: no live web/news tool results were used. In "Sourced vs estimate", say pack heuristic / estimate (local gig-vehicle specialist pack) ONLY. Do NOT invent TDI, DFW market scrapes, dealer quotes, Autotrader/Cars.com "sources", listing prices, fake citations, SOH %, failure probabilities, reliability index scores, or NHTSA campaign details. Point to Autotrader/Cars.com filters for Fort Worth / Alliance (76177) without claiming you pulled live inventory.`);
   }
   parts.push(`- Do not invent NHTSA recall campaign IDs unless present in tool text; if unsure, say so and rely on what the sources show.`);
-  parts.push(`- ANTI-FAKE-STATS: Never invent SOH percentages or hard SOH cutoffs (e.g. SOH < 80% reject), failure probabilities, \"X% of cars\", reliability index scores (e.g. 3.2/5.0), insurance %, \"guaranteed\" claims, exact gallon/$ fuel-penalty figures, or precise chance-of-failure numbers unless those exact figures appear in the tool result text below. Prefer qualitative: \"battery health varies; require PPI / SOH report; if battery unknown/weak → Corolla; fuel savings can be meaningful but battery risk can erase them at high annual miles.\"`);
+  parts.push(`- ANTI-FAKE-STATS: Never invent SOH percentages or hard SOH cutoffs (e.g. SOH < 80% reject), failure probabilities, "X% of cars", reliability index scores (e.g. 3.2/5.0), insurance %, "guaranteed" claims, exact gallon/$ fuel-penalty figures, or precise chance-of-failure numbers unless those exact figures appear in the tool result text below. Prefer qualitative: "battery health varies; require PPI / SOH report; if battery unknown/weak → Corolla; fuel savings can be meaningful but battery risk can erase them at high annual miles."`);
   parts.push(`- Do not over-claim NHTSA sourcing. If campaign details are not in tool snippets, say you do not have the campaign text — do not fabricate IDs or rates.`);
   parts.push(`- Rough annual cost buckets (fuel, insurance, maintenance, tires) OK if labeled estimates with uncertainty. Illustrative ranges OK only if clearly labeled estimate; prefer qualitative. No fake precision. Do NOT double-count buckets (e.g. tires twice).`);
   parts.push(`- Prefer Alliance / Fort Worth 76177 framing; never invent ZIP bands (e.g. 76102–76140).`);
@@ -610,6 +702,18 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
     parts.push(JSON.stringify(bag.weather, null, 2));
   }
 
+  if (bag.page) {
+    parts.push(``);
+    parts.push(`Fetched page:`);
+    parts.push(JSON.stringify({
+      url: bag.page.url,
+      finalUrl: bag.page.finalUrl,
+      title: bag.page.title,
+      error: bag.page.error || null,
+      textPreview: bag.page.text ? String(bag.page.text).slice(0, 2000) : null
+    }, null, 2));
+  }
+
   if (bag.errors && bag.errors.length) {
     parts.push(``);
     parts.push(`Tool notes (do not lead the reply with these; do not invent replacements):`);
@@ -618,6 +722,7 @@ function buildSynthesisPrompt(message, intent, bag, wantsRecommendation) {
 
   return parts.join("\n");
 }
+
 
 async function runResearchLoop(opts) {
   const message = String(opts.message || "");
@@ -631,10 +736,10 @@ async function runResearchLoop(opts) {
   const skipSynthesize = !!opts.skipSynthesize;
 
   if (!steps.length) {
-    return { text: "", model, plan: [], bag: { web: null, news: null, stocks: {}, weather: null, domainPack: null, errors: [] }, skipped: true };
+    return { text: "", model, plan: [], bag: { web: null, news: null, stocks: {}, weather: null, page: null, domainPack: null, errors: [] }, skipped: true };
   }
 
-  const bag = { web: null, news: null, stocks: {}, weather: null, domainPack: null, errors: [] };
+  const bag = { web: null, news: null, stocks: {}, weather: null, page: null, domainPack: null, errors: [] };
 
   for (const s of steps) {
     if (s.queryMeta && s.queryMeta.wasRewritten) {
@@ -644,7 +749,15 @@ async function runResearchLoop(opts) {
     }
   }
 
-  stream.note(`Research plan (${steps.length} step${steps.length === 1 ? "" : "s"}): ${describePlan(steps)}`);
+  if (route.intent === "weather") {
+    const loc = (route.payload && route.payload.location) || "Fort Worth";
+    stream.note(`Checking weather for ${loc}…`);
+  } else if (route.intent === "fetch") {
+    const u = (route.payload && route.payload.url) || "page";
+    stream.note(`Fetching webpage: ${u}…`);
+  } else {
+    stream.note(`Research plan (${steps.length} step${steps.length === 1 ? "" : "s"}): ${describePlan(steps)}`);
+  }
 
   let i = 0;
   let stepOrdinal = 0;
@@ -696,6 +809,10 @@ async function runResearchLoop(opts) {
           const bits = [w.location];
           if (w.current) bits.push(`${w.current.temp_f}Â°F, ${w.current.condition || ""}`.trim());
           stream.note(`Weather loaded: ${bits.join(" — ")}`);
+        } else if (outcome.kind === "page" && outcome.data) {
+          if (outcome.data.title) stream.note(`Page loaded: ${outcome.data.title}`);
+          else if (outcome.data.url) stream.note(`Page loaded: ${outcome.data.url}`);
+          else stream.note("Page content loaded.");
         }
       } else {
         stream.note(`${s.label} unavailable${outcome.error ? ": " + String(outcome.error).slice(0, 80) : ""}. Continuing…`);
@@ -738,12 +855,13 @@ async function runResearchLoop(opts) {
   const citations = countCitations(bag);
   const hasStock = bag.stocks && Object.keys(bag.stocks).some((k) => bag.stocks[k] && !bag.stocks[k].error);
   const hasWeather = bag.weather && !bag.weather.error;
+  const hasPage = !!(bag.page && !bag.page.error && bag.page.text);
   const hasDomain = !!(bag.domainPack && String(bag.domainPack).length > 40);
-  const hasAny = citations > 0 || hasStock || hasWeather || hasDomain;
+  const hasAny = citations > 0 || hasStock || hasWeather || hasPage || hasDomain;
 
   if (skipSynthesize) return { text: "", model, plan: steps, bag, gathered: true };
 
-  const askOpts = { think: !!opts.think };
+  const askOpts = { think: !!opts.think, userMessage: message, route };
 
   if (!hasAny) {
     if (wantsRecommendation && typeof askOllama === "function") {
@@ -758,9 +876,13 @@ async function runResearchLoop(opts) {
     return { text, model, plan: steps, bag };
   }
 
-  const packOnlySynth = hasDomain && citations === 0 && !hasStock && !hasWeather;
+  const packOnlySynth = hasDomain && citations === 0 && !hasStock && !hasWeather && !hasPage;
   if (packOnlySynth) {
     stream.note("Using gig-vehicle specialist knowledge…");
+  } else if (route.intent === "weather" || (hasWeather && citations === 0 && !hasStock && !hasPage && !hasDomain)) {
+    stream.note("Summarizing weather…");
+  } else if (route.intent === "fetch" || hasPage) {
+    stream.note("Reviewing page content…");
   } else {
     stream.note(`Synthesizing from ${citations || "tool"} source${citations === 1 ? "" : "s"}…`);
   }
@@ -772,7 +894,7 @@ async function runResearchLoop(opts) {
 module.exports = {
   planTools, runResearchLoop, formatWebResults, formatNewsResults, refineNewsTopic,
   describePlan, rewriteSearchQuery, rewriteNewsTopic, resultsSeemThinOrOffTopic,
-  buildSynthesisPrompt, extractBudget, extractGigUseCase, extractCriteria,
+  buildSynthesisPrompt, buildWeatherSynthesisPrompt, buildFetchSynthesisPrompt, extractBudget, extractGigUseCase, extractCriteria,
   hasCostReliabilityLanguage, rankWebResultsForSynth, scoreWebResultForSynth, MAX_STEPS,
   shouldUseKnowledgeFirst
 };

@@ -5,7 +5,8 @@ const {
   getWeather,
   getNews,
   getStock,
-  webSearch
+  webSearch,
+  fetchWebpage
 } = require("./tools");
 const { routeMessage, needsFactualRefresh } = require("./router");
 const { runResearchLoop, planTools, formatNewsResults } = require("./researchLoop");
@@ -30,19 +31,26 @@ function getDurableMemory() {
 }
 
 
-const SYSTEM_PROMPT = `You are AIPickVault Desktop — a research assistant by Blake Mauldin in Fort Worth, Texas.
+const SYSTEM_PROMPT = `You are AIPickVault Desktop — a general local research assistant by Blake Mauldin in Fort Worth, Texas.
 
 Identity
 - If asked who you are or your name: say you are AIPickVault Desktop, compiled by Blake Mauldin in Fort Worth, Texas.
 - Never claim to be Grok, ChatGPT, Claude, or any other product.
 - Never say you are Qwen, Llama, Ollama, or name the underlying engine unless the user explicitly asks how you run.
 
+What you can do
+- Weather, news, stocks/finance, web search, webpage fetch/review, general conversation, and local research.
+- A gig/delivery vehicle specialist domain pack exists for Blake's courier / TCO / used-car questions — use it ONLY when that subject is active. Never claim you are limited to vehicle recommendations, cost/maintenance analysis, or research-only vehicle advice.
+- Never say you cannot view or analyze websites when page content was fetched, or when the user asks you to look at a URL/page (the app can fetch it). If a fetch failed, say so clearly and still give useful high-level feedback from what you have.
+
 Reasoning (Grok-like, as far as local models allow)
 - Think through tradeoffs before answering. Challenge weak or irrelevant sources.
-- Prefer a coherent, decisive recommendation over tool-meta, apologies, or "I couldn't find…".
-- When advising Blake: he does last-mile gig delivery (DoorDash, Uber, Uber Eats, Roadie, Amazon Flex, Shipt), maintains a cargo van, and is also evaluating a sub-$10k car for food/gig delivery — Fort Worth / Alliance (76177). Use durable memory facts when present.
-- For cars and gear: rank by overall annual cost, reliability, and maintenance for HIS use — not badge prestige.
+- Prefer a coherent, decisive answer over tool-meta, apologies, or "I couldn't find…".
 - Be honest about uncertainty.
+
+When (and only when) advising on vehicles / gig delivery
+- Blake does last-mile gig delivery (DoorDash, Uber, Uber Eats, Roadie, Amazon Flex, Shipt), maintains a cargo van, and is also evaluating a sub-$10k car for food/gig delivery — Fort Worth / Alliance (76177). Use durable memory facts when present.
+- Rank by overall annual cost, reliability, and maintenance for HIS use — not badge prestige.
 
 Anti-hallucination (critical)
 - Never invent specific for-sale cars, VINs, dealer inventory, sticker/asking prices, or "verified at dealer" claims.
@@ -58,13 +66,14 @@ Anti-hallucination (critical)
 - Prefer Alliance / Fort Worth 76177; never invent ZIP bands (e.g. 76102–76140).
 - On pack-only / domain-pack turns, "Sourced vs estimate" must say pack heuristic only — do not over-claim NHTSA or market sourcing.
 - Never label mainstream US-market cars as "foreign imports to avoid."
+- For webpage reviews: do not invent page quotes that are not in the fetched extract.
 
 Style
 - Be direct and specific. No filler, no throat-clearing, no "Great question!" or "I'd be happy to help".
 - Lead with the answer. Keep prose tight.
 - Admit uncertainty with precision; do not hide behind tool failures.
 - When tool results or source lists are provided, use the useful ones and cite titles with links. Discard app-store / wrong-country spam mentally.
-- Prefer structured answers for stocks, weather, and research (clear headings/sections).
+- Prefer structured answers for stocks, weather, webpage reviews, and research (clear headings/sections).
 - For follow-ups, use prior conversation context and durable memory; resolve pronouns when obvious.`;
 
 /** Max user+assistant messages retained (oldest dropped first). */
@@ -428,9 +437,15 @@ async function askOllama(prompt, model = "qwen3:30b", onChunk, opts) {
   const think = !!(opts && opts.think);
   const memSuffix = getDurableMemory().buildSystemSuffix();
   let system = SYSTEM_PROMPT + memSuffix;
-  // Knowledge-first: inject local gig-vehicle pack for courier/vehicle advice turns.
+  // Knowledge-first: inject gig-vehicle pack ONLY for vehicle/gig subject turns —
+  // never for weather/fetch/general chat. Prefer explicit userMessage over synth prompt.
+  const subjectText = String((opts && opts.userMessage) || prompt || "");
+  const looksLikeSynthPrompt =
+    /Intent:\s*(weather|fetch|news|stock)/i.test(subjectText) ||
+    /^You are AIPickVault Desktop — a general local research assistant\./.test(subjectText);
   if (
-    shouldUseKnowledgeFirst(String(prompt || ""), null, {
+    !looksLikeSynthPrompt &&
+    shouldUseKnowledgeFirst(subjectText, (opts && opts.route) || null, {
       conversationHistory,
       durableMemory: getDurableMemory()
     })
@@ -516,7 +531,7 @@ function makeStream(event) {
 }
 
 function toolFns() {
-  return { getWeather, getNews, getStock, webSearch };
+  return { getWeather, getNews, getStock, webSearch, fetchWebpage };
 }
 
 async function runRoutedResearch(message, model, route, stream) {
@@ -650,6 +665,15 @@ async function handleSearch(message, model, payload, stream) {
   );
 }
 
+async function handleFetch(message, model, payload, stream) {
+  return runRoutedResearch(
+    message,
+    model,
+    { intent: "fetch", payload: payload || {} },
+    stream
+  );
+}
+
 async function handleChat(message, model, stream) {
   const answer = await askOllama(message, model, stream.chunk, {
     includeHistory: true
@@ -743,6 +767,9 @@ ipcMain.handle("ask-model", async (event, data) => {
         break;
       case "search":
         result = await handleSearch(message, model, route.payload, stream);
+        break;
+      case "fetch":
+        result = await handleFetch(message, model, route.payload, stream);
         break;
       case "chat":
       default:

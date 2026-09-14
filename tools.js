@@ -7,6 +7,10 @@ const NEWS_API_KEY = process.env.NEWS_API_KEY;
 const SEARCH_API_KEY = process.env.SEARCH_API_KEY;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
+const MAX_FETCH_BYTES = 500000;
+const MAX_TEXT_CHARS = 12000;
+const FETCH_TIMEOUT_MS = 15000;
+
 function missingKey(name) {
   return { error: `${name} is not configured. Add it to your .env file.` };
 }
@@ -123,9 +127,124 @@ async function webSearch(query) {
   }));
 }
 
+function decodeEntities(s) {
+  return String(s || "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#(\d+);/g, (_, n) => {
+      const code = Number(n);
+      return Number.isFinite(code) ? String.fromCharCode(code) : _;
+    });
+}
+
+function stripHtmlToText(html) {
+  let s = String(html || "");
+  const titleMatch = s.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const title = titleMatch
+    ? decodeEntities(titleMatch[1]).replace(/\s+/g, " ").trim()
+    : "";
+
+  s = s.replace(/<script[\s\S]*?<\/script>/gi, " ");
+  s = s.replace(/<style[\s\S]*?<\/style>/gi, " ");
+  s = s.replace(/<noscript[\s\S]*?<\/noscript>/gi, " ");
+  s = s.replace(/<!--[\s\S]*?-->/g, " ");
+
+  const mainMatch =
+    s.match(/<main\b[^>]*>[\s\S]*?<\/main>/i) ||
+    s.match(/<article\b[^>]*>[\s\S]*?<\/article>/i);
+  if (mainMatch) s = mainMatch[0];
+
+  s = s.replace(/<[^>]+>/g, " ");
+  s = decodeEntities(s).replace(/\s+/g, " ").trim();
+  return { title, text: s.slice(0, MAX_TEXT_CHARS) };
+}
+
+/**
+ * HTTP GET a public webpage and extract title + main text (scripts stripped).
+ * Caps download size and extracted text. Clear error objects on failure.
+ */
+async function fetchWebpage(url) {
+  let target = String(url || "").trim();
+  if (!target) return { error: "No URL provided." };
+  if (!/^https?:\/\//i.test(target)) {
+    target = "https://" + target.replace(/^\/\//, "");
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(target);
+  } catch (_) {
+    return { error: "Invalid URL.", url: target };
+  }
+  if (!/^https?:$/i.test(parsed.protocol)) {
+    return { error: "Only http(s) URLs are supported.", url: parsed.toString() };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(parsed.toString(), {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: {
+        "User-Agent":
+          "AIPickVault-Desktop/1.0 (+local research assistant; Blake Mauldin)",
+        Accept: "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.7"
+      }
+    });
+
+    if (!res.ok) {
+      return {
+        error: `HTTP ${res.status} fetching ${parsed.toString()}`,
+        url: parsed.toString(),
+        status: res.status
+      };
+    }
+
+    const buf = await res.arrayBuffer();
+    const truncatedDownload = buf.byteLength > MAX_FETCH_BYTES;
+    const slice = truncatedDownload ? buf.slice(0, MAX_FETCH_BYTES) : buf;
+    const html = new TextDecoder("utf-8", { fatal: false }).decode(slice);
+    const { title, text } = stripHtmlToText(html);
+
+    if (!text || text.length < 40) {
+      return {
+        error:
+          "Could not extract readable text from the page (may be JavaScript-rendered or blocked).",
+        url: parsed.toString(),
+        finalUrl: res.url || parsed.toString(),
+        title: title || null
+      };
+    }
+
+    return {
+      url: parsed.toString(),
+      finalUrl: res.url || parsed.toString(),
+      title: title || null,
+      text,
+      truncated: truncatedDownload || text.length >= MAX_TEXT_CHARS
+    };
+  } catch (err) {
+    const msg =
+      err && err.name === "AbortError"
+        ? "Timed out fetching page."
+        : err && err.message
+          ? err.message
+          : String(err);
+    return { error: msg, url: parsed.toString() };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 module.exports = {
   getWeather,
   getNews,
   getStock,
-  webSearch
+  webSearch,
+  fetchWebpage
 };

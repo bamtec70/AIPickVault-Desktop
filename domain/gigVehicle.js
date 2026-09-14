@@ -208,6 +208,11 @@ function ensureGigVehicleDomainRoute(message, route, opts) {
   const r = route || { intent: "chat", payload: {} };
   const payload = r.payload || {};
 
+  // Never hijack weather/news/stocks/webpage-fetch into the gig-vehicle pack.
+  if (["weather", "news", "stock", "stock_compare", "fetch"].includes(r.intent)) {
+    return r;
+  }
+
   if (payload.forceToolRefresh) return r;
   try {
     const { needsFactualRefresh } = require("../router");

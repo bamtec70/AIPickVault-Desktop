@@ -137,4 +137,31 @@ expectIntent("insurance quote for a used Prius", "search");
   assert.ok(rRoute.payload.forceToolRefresh || rRoute.payload.tools.includes("search"));
 }
 
+// --- webpage / URL fetch intent ---
+expectIntent("Take a look at my webpage: wethepeoplepress.com. What do you think?", "fetch", (r) => {
+  assert.ok(r.payload.tools.includes("fetch"));
+  assert.ok(r.payload.url && /wethepeoplepress\.com/i.test(r.payload.url));
+});
+expectIntent("https://example.com/about — review this site", "fetch", (r) => {
+  assert.ok(r.payload.tools.includes("fetch"));
+  assert.match(r.payload.url, /example\.com/i);
+});
+expectIntent("Check out my website www.example.org", "fetch", (r) => {
+  assert.ok(r.payload.tools.includes("fetch"));
+  assert.match(r.payload.url, /example\.org/i);
+});
+{
+  const { extractUrlsFromMessage, isWebpageReviewIntent } = require("./router");
+  const urls = extractUrlsFromMessage("Take a look at my webpage: wethepeoplepress.com. What do you think?");
+  assert.ok(urls.some((u) => /wethepeoplepress\.com/i.test(u)));
+  assert.strictEqual(
+    isWebpageReviewIntent(
+      "Take a look at my webpage: wethepeoplepress.com. What do you think?",
+      "take a look at my webpage: wethepeoplepress.com. what do you think?"
+    ),
+    true
+  );
+}
+
+
 console.log("All router tests passed.");

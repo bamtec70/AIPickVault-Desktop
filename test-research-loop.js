@@ -334,8 +334,119 @@ assert.strictEqual(
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+
+// --- URL / webpage fetch plan ---
+expectTools(
+  "Take a look at my webpage: wethepeoplepress.com. What do you think?",
+  ["fetch"],
+  "fetch"
+);
+{
+  const { route, plan } = planFor("https://example.com — what do you think of this site?");
+  assert.strictEqual(route.intent, "fetch");
+  assert.deepStrictEqual(plan.map((s) => s.tool), ["fetch"]);
+  assert.ok(route.payload.url && /example\.com/i.test(route.payload.url));
+}
+
+// Weather synthesis progress should not say "Synthesizing from tool sources"
+async function __weatherProgressTest() {
+  const notes = [];
+  const out = await runResearchLoop({
+    message: "What's the weather like?",
+    route: { intent: "weather", payload: { location: "Fort Worth", tools: ["weather"] } },
+    model: "test",
+    askOllama: async () => "Sunny in Fort Worth.",
+    tools: {
+      webSearch: async () => [],
+      getNews: async () => [],
+      getStock: async () => null,
+      getWeather: async () => ({
+        location: "Fort Worth",
+        current: { temp_f: 98, condition: "Sunny" },
+        today: { high_f: 99, low_f: 78, condition: "Sunny" },
+        tomorrow: { high_f: 97, low_f: 77, condition: "Partly cloudy" }
+      }),
+      fetchWebpage: async () => ({ error: "should not fetch" })
+    },
+    stream: { note: (n) => notes.push(String(n)), chunk() {} }
+  });
+  assert.ok(out.plan.some((s) => s.tool === "weather"));
+  assert.ok(notes.some((n) => /Checking weather/i.test(n)), "notes=" + JSON.stringify(notes));
+  assert.ok(notes.some((n) => /Summarizing weather/i.test(n)), "notes=" + JSON.stringify(notes));
+  assert.ok(!notes.some((n) => /Synthesizing from .*source/i.test(n)), "must not say synthesizing from tool sources for weather");
+}
+
+// Fetch plan executes fetchWebpage and reviews page (not vehicle refusal)
+async function __fetchPageTest() {
+  const notes = [];
+  let capturedPrompt = "";
+  const out = await runResearchLoop({
+    message: "Take a look at my webpage: wethepeoplepress.com. What do you think?",
+    route: {
+      intent: "fetch",
+      payload: {
+        url: "https://wethepeoplepress.com",
+        urls: ["https://wethepeoplepress.com"],
+        tools: ["fetch"]
+      }
+    },
+    model: "test",
+    askOllama: async (prompt) => {
+      capturedPrompt = String(prompt || "");
+      return "Solid patriotic news site; clear headline hierarchy.";
+    },
+    tools: {
+      webSearch: async () => [],
+      getNews: async () => [],
+      getStock: async () => null,
+      getWeather: async () => null,
+      fetchWebpage: async (url) => ({
+        url,
+        finalUrl: url,
+        title: "We The People Press",
+        text: "Independent news and commentary. Headlines about liberty, local government, and civic engagement. Subscribe for updates.",
+        truncated: false
+      })
+    },
+    stream: { note: (n) => notes.push(String(n)), chunk() {} }
+  });
+  assert.ok(out.plan.some((s) => s.tool === "fetch"));
+  assert.ok(notes.some((n) => /Fetching webpage|Reviewing page/i.test(n)), "notes=" + JSON.stringify(notes));
+  assert.match(capturedPrompt, /We The People Press|Independent news/i);
+  assert.match(capturedPrompt, /Never say you cannot view websites|CAN view\/analyze websites/i);
+  assert.ok(!/capabilities are limited to/i.test(capturedPrompt));
+  assert.ok(!/I cannot view or analyze websites/i.test(capturedPrompt));
+}
+
+// System prompt is general research assistant, not vehicle-only
+{
+  const mainSrc = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
+  assert.match(mainSrc, /general local research assistant/i);
+  assert.match(mainSrc, /Never claim you are limited to vehicle/i);
+  assert.match(mainSrc, /Never say you cannot view or analyze websites/i);
+  const weatherPrompt = buildSynthesisPrompt(
+    "What's the weather like?",
+    "weather",
+    {
+      web: null,
+      news: null,
+      stocks: {},
+      weather: { location: "Fort Worth", current: { temp_f: 90, condition: "Sunny" } },
+      page: null,
+      errors: []
+    },
+    false
+  );
+  assert.match(weatherPrompt, /Summarize the weather|Weather data/i);
+  assert.ok(!/Lead with a direct recommendation ranked by overall annual cost/i.test(weatherPrompt));
+  assert.ok(!/gig-vehicle specialist pack/i.test(weatherPrompt));
+}
+
+
 // Pack-only synthesis: status note + Sourced vs estimate must not invent tool sources
 (async () => {
+  await __weatherProgressTest();
+  await __fetchPageTest();
   const notes = [];
   const fakeAsk = async () => "ok";
   const out = await runResearchLoop({

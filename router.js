@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 /**
  * Deterministic intent router for AIPickVault Desktop.
@@ -6,7 +6,7 @@
  * routeMessage(message) -> { intent, payload }
  *
  * Intents:
- *   stock_compare | stock | weather | news | search | chat
+ *   stock_compare | stock | weather | news | fetch | search | chat
  *
  * ---------------------------------------------------------------------------
  * Priority (first match wins) — keep this order in code and tests:
@@ -15,8 +15,9 @@
  *   2. stock          1–5 letter tickers, $TICKER, aliases with market context
  *   3. weather        requires weather context (NOT bare high / low / rain)
  *   4. news           news / headlines / breaking news
- *   5. search         explicit research / lookup / live product questions
- *   6. chat           conversation, identity, how-to — do not force a tool
+ *   5. fetch          http(s)/www/webpage review + domain
+ *   6. search         explicit research / lookup / live product questions
+ *   7. chat           conversation, identity, how-to — do not force a tool
  *
  * ---------------------------------------------------------------------------
  * Architecture (Grok-like path; identity stays AIPickVault Desktop):
@@ -315,6 +316,105 @@ function newsTopic(lower) {
   return "technology";
 }
 
+function normalizeUrlCandidate(raw) {
+  let s = String(raw || "")
+    .trim()
+    .replace(/^<|>$/g, "")
+    .replace(/[)\],.!?;:'"]+$/g, "");
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) return s;
+  if (/^\/\//.test(s)) return "https:" + s;
+  if (/^www\./i.test(s)) return "https://" + s;
+  // bare domain.tld or domain.tld/path
+  if (
+    /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(\/[^\s]*)?$/i.test(
+      s
+    )
+  ) {
+    return "https://" + s;
+  }
+  return null;
+}
+
+function extractUrlsFromMessage(message) {
+  const text = String(message || "");
+  const found = [];
+  const seen = new Set();
+  const push = (u) => {
+    const n = normalizeUrlCandidate(u);
+    if (!n) return;
+    const key = n.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    found.push(n);
+  };
+
+  let m;
+  const reHttp = /https?:\/\/[^\s<>"']+/gi;
+  while ((m = reHttp.exec(text))) push(m[0]);
+
+  const reWww = /\bwww\.[^\s<>"']+/gi;
+  while ((m = reWww.exec(text))) push(m[0]);
+
+  const look = text.match(
+    /\b(?:take a\s+)?look at\s+(?:my\s+)?(?:web\s*)?(?:page|site|website)\s*[:\-]?\s*([^\s]+)/i
+  );
+  if (look) push(look[1]);
+
+  const check = text.match(
+    /\b(?:check out|review|analyze|open)\s+(?:my\s+)?(?:web\s*)?(?:page|site|website)\s*[:\-]?\s*([^\s]+)/i
+  );
+  if (check) push(check[1]);
+
+  // With webpage/site language, also pick bare domains (e.g. wethepeoplepress.com).
+  if (
+    /\b(web\s*page|webpage|website|web\s*site|my\s+site|my\s+page)\b/i.test(text) ||
+    (/\b(look at|check out|review|what do you think)\b/i.test(text) &&
+      /\b(page|site|website)\b/i.test(text))
+  ) {
+    const bare =
+      text.match(
+        /\b([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?:\/[^\s]*)?)\b/gi
+      ) || [];
+    for (const b of bare) {
+      // skip common false positives
+      if (/^(e\.g|i\.e|vs\.|etc)\b/i.test(b)) continue;
+      push(b);
+    }
+  }
+
+  return found;
+}
+
+function isWebpageReviewIntent(message, lower) {
+  const urls = extractUrlsFromMessage(message);
+  if (/https?:\/\//i.test(message) || /\bwww\./i.test(lower)) {
+    return urls.length > 0;
+  }
+  if (
+    /\b(?:take a\s+)?look at\s+(?:my\s+)?(?:web\s*)?(?:page|site|website)\b/i.test(
+      lower
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:check out|review|analyze|feedback on)\s+(?:my\s+)?(?:web\s*)?(?:page|site|website)\b/i.test(
+      lower
+    )
+  ) {
+    return true;
+  }
+  if (
+    urls.length > 0 &&
+    /\b(what do you think|review|feedback|analyze|critique)\b/i.test(lower) &&
+    /\b(page|site|website|webpage)\b/i.test(lower)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function isPureChitchat(lower) {
   if (/^(hi|hello|hey|thanks|thank you|good morning|good night)(?:[\s,.!]|$)/i.test(lower)) {
     return true;
@@ -506,6 +606,19 @@ function routeMessage(message) {
     };
   }
 
+  if (isWebpageReviewIntent(text, lower)) {
+    const urls = extractUrlsFromMessage(text);
+    return {
+      intent: "fetch",
+      payload: {
+        url: urls[0] || null,
+        urls,
+        tools: ["fetch"],
+        query: text
+      }
+    };
+  }
+
   if (isSearchIntent(text, lower)) {
     const tools = ["search"];
     if (shouldAlsoSearchNews(lower) || /\b(recall|nhtsa)\b/i.test(lower)) {
@@ -543,6 +656,8 @@ function routeMessage(message) {
 module.exports = {
   routeMessage,
   needsFactualRefresh,
+  extractUrlsFromMessage,
+  isWebpageReviewIntent,
   STOCK_ALIASES,
   DEFAULT_WEATHER_LOCATION
 };
