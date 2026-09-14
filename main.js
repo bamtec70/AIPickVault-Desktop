@@ -9,6 +9,7 @@ const {
 } = require("./tools");
 const { routeMessage } = require("./router");
 const { runResearchLoop, planTools, formatNewsResults } = require("./researchLoop");
+const sessionLog = require("./sessionLog");
 
 const SYSTEM_PROMPT = `You are AIPickVault Desktop — a research assistant by Blake Mauldin in Fort Worth, Texas.
 
@@ -68,6 +69,14 @@ function rememberTurn(userText, assistantText) {
 function memoryTurnCount() {
   return Math.floor(conversationHistory.length / 2);
 }
+
+function withResultMeta(result) {
+  return {
+    ...result,
+    memoryTurns: memoryTurnCount()
+  };
+}
+
 
 /**
  * Short follow-ups with pronouns — prefer chat+history over a wrong re-route.
@@ -368,8 +377,17 @@ function makeStream(event) {
   const sender = event.sender;
   return {
     note(text) {
+      const t = String(text || "");
+      if (/synthesiz/i.test(t)) {
+        sessionLog.synthesize(t);
+      } else if (/^Step\s/i.test(t) || /unavailable|Found |parallel|Research plan/i.test(t)) {
+        const fail = /unavailable/i.test(t);
+        sessionLog.toolStep(t, !fail, "");
+      } else {
+        sessionLog.info("NOTE", t);
+      }
       if (sender && !sender.isDestroyed()) {
-        sender.send("ask-model-note", { text: String(text || "") });
+        sender.send("ask-model-note", { text: t });
       }
     },
     chunk(delta) {
@@ -555,15 +573,22 @@ ipcMain.handle("ask-model", async (event, data) => {
       return result;
     }
 
+    sessionLog.prompt(message);
+
     let route = routeMessage(message);
     route = maybePreferChatHistory(message, route);
     console.log("ROUTE:", JSON.stringify(route));
+    sessionLog.route(route);
     console.log(
       "MEMORY_BEFORE:",
       conversationHistory.length,
       "msgs /",
       memoryTurnCount(),
       "turns"
+    );
+    sessionLog.info(
+      "MEMORY_BEFORE",
+      conversationHistory.length + " msgs / " + memoryTurnCount() + " turns"
     );
 
     let result;
@@ -601,11 +626,22 @@ ipcMain.handle("ask-model", async (event, data) => {
       memoryTurnCount(),
       "turns"
     );
+    sessionLog.info(
+      "MEMORY_AFTER",
+      conversationHistory.length + " msgs / " + memoryTurnCount() + " turns"
+    );
+    if (result && result.text) {
+      sessionLog.reply(result.text);
+    }
+    if (result && result.plan) {
+      sessionLog.info("PLAN", JSON.stringify(result.plan));
+    }
 
     stream.done(result);
     return result;
   } catch (err) {
     console.error(err);
+    sessionLog.error("ASK_MODEL", err);
     const text = friendlyOllamaError(err, model);
     stream.error(text);
     return withResultMeta({
@@ -615,7 +651,12 @@ ipcMain.handle("ask-model", async (event, data) => {
   }
 });
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  const logPath = sessionLog.getLogPath();
+  sessionLog.info("APP_START", "session log -> " + logPath);
+  console.log("AIPickVault Desktop session log:", logPath);
+  createWindow();
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
